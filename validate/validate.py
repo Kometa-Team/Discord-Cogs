@@ -31,7 +31,7 @@ class RedBotCogValidate(commands.Cog):
 
         # Check for !bypass in the first line or anywhere in the message
         content_lines = message.content.splitlines()
-        if '!bypass' in content_lines[0] or '!bypass' in message.content:
+        if content_lines and '!bypass' in content_lines[0] or '!bypass' in message.content:
             mylogger.info("Message contains !bypass. Skipping validation.")
             return
 
