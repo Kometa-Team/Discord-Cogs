@@ -59,7 +59,7 @@ class RedBotCogValidate(commands.Cog):
     async def send_validation_message(self, channel, code_block, is_valid, error_message=None):
         # Determine the appropriate emoji and status message based on YAML validity
         emoji = '✅' if is_valid else '❌'
-        status_message = 'passed! YAML checked and **IS** valid.\n\n**Note:** Although YAML is valid, it may not be written as Kometa expects' if is_valid else 'failed! YAML checked and is **NOT** valid.'
+        status_message = 'passed! That is **valid** YAML, but may not meet Kometa''s requirements' if is_valid else 'failed! YAML checked and is **NOT** valid.'
 
         # Format the validation message with emoji and status
         formatted_message = f"{emoji} YAML validation {status_message}\n"
@@ -71,11 +71,11 @@ class RedBotCogValidate(commands.Cog):
 
         # Add reaction emoji to the message based on validation result
         if is_valid:
-            await message.add_reaction('🇾')  # Letter Y
-            await message.add_reaction('🇦')  # Letter A
-            await message.add_reaction('🇲')  # Letter M
-            await message.add_reaction('🇱')  # Letter L
-            await message.add_reaction('🆗')  # "YAML OK" emoji
+            # await message.add_reaction('🇾')  # Letter Y
+            # await message.add_reaction('🇦')  # Letter A
+            # await message.add_reaction('🇲')  # Letter M
+            # await message.add_reaction('🇱')  # Letter L
+            # await message.add_reaction('🆗')  # "YAML OK" emoji
         else:
             await message.add_reaction('🇾')  # Letter Y
             await message.add_reaction('🇦')  # Letter A
