@@ -22,11 +22,17 @@ class RedBotCogValidate(commands.Cog):
         author_name = f"{message.author.name}#{message.author.discriminator}" if message.author else "Unknown"
         guild_name = message.guild.name if message.guild else "Direct Message"
         channel_name = message.channel.name if isinstance(message.channel, discord.TextChannel) else "Direct Message"
-        
-        mylogger.info(f"Validate invoked by {author_name} in {guild_name}/{channel_name} (ID: {message.guild.id if message.guild else 'N/A'}/{message.channel.id if message.guild else 'N/A'})")
-        # mylogger.info(f"Received message (ID: {message.id}) from {message.author.name} in #{message.channel.name}")
+
+        mylogger.info(
+            f"Validate invoked by {author_name} in {guild_name}/{channel_name} (ID: {message.guild.id if message.guild else 'N/A'}/{message.channel.id if message.guild else 'N/A'})")
 
         if message.author.bot:
+            return
+
+        # Check for !ignore in the first line or anywhere in the message
+        content_lines = message.content.splitlines()
+        if '!ignore' in content_lines[0] or '!ignore' in message.content:
+            mylogger.info("Message contains !ignore. Skipping validation.")
             return
 
         # Process message content for inline YAML code blocks
@@ -59,7 +65,7 @@ class RedBotCogValidate(commands.Cog):
     async def send_validation_message(self, channel, code_block, is_valid, error_message=None):
         # Determine the appropriate emoji and status message based on YAML validity
         emoji = '✅' if is_valid else '❌'
-        status_message = 'passed!! That is **valid** YAML, but may not meet Kometa''s requirements' if is_valid else 'failed! YAML checked and is **NOT** valid.'
+        status_message = 'passed!! That is **valid** YAML, but may not meet Kometa\'s requirements' if is_valid else 'failed! YAML checked and is **NOT** valid.'
 
         # Format the validation message with emoji and status
         formatted_message = f"{emoji} YAML validation {status_message}\n"
