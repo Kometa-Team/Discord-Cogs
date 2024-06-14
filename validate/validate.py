@@ -29,10 +29,10 @@ class RedBotCogValidate(commands.Cog):
         if message.author.bot:
             return
 
-        # Check for !ignore in the first line or anywhere in the message
+        # Check for !bypass in the first line or anywhere in the message
         content_lines = message.content.splitlines()
-        if '!ignore' in content_lines[0] or '!ignore' in message.content:
-            mylogger.info("Message contains !ignore. Skipping validation.")
+        if '!bypass' in content_lines[0] or '!bypass' in message.content:
+            mylogger.info("Message contains !bypass. Skipping validation.")
             return
 
         # Process message content for inline YAML code blocks
