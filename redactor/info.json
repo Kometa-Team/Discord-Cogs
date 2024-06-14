@@ -1,10 +1,10 @@
 {
     "author" : ["Kometa-Team"],
-    "install_msg" : "You have just installed the 'redactor' cog. Have fun! This cog will attempt to auto-redact messages with sensitive information like a config.yml file",
+    "install_msg" : "You have just installed the 'redactor' cog. Have fun! This cog will attempt to auto-redact messages with sensitive information like a config.yml file. Add !bypass to have cog ignore and not redact.",
     "name" : "redactor",
-    "short" : "This cog will attempt to auto-redact messages with sensitive information like a config.yml file",
+    "short" : "This cog will attempt to auto-redact messages with sensitive information like a config.yml file. Add !bypass to have cog ignore and not redact.",
     "requirements" : ["None"],
-    "description" : "This cog will attempt to auto-redact messages with sensitive information like a config.yml file",
+    "description" : "This cog will attempt to auto-redact messages with sensitive information like a config.yml file. Add !bypass to have cog ignore and not redact.",
     "permissions" : ["Not sure"],
     "tags" : ["redactor, embeds, auto-responder"]
 }

@@ -7,9 +7,9 @@ import asyncio
 from redbot.core import commands, app_commands
 
 # Global error and start messages
-START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information.\n\nIf you feel this message should not have been redacted, resend it with `!noredact` in your message to avoid redaction."
+START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information.\n\nIf you feel this message should not have been redacted, resend it with `!bypass` in your message to avoid redaction."
 FORBIDDEN_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information."
-NO_REDACT_COMMAND = "!noredact"
+NO_REDACT_COMMAND = "!bypass"
 
 # Create logger
 mylogger = logging.getLogger('redactor')
@@ -59,9 +59,9 @@ class RedBotCog(commands.Cog):
                     return
 
                 if NO_REDACT_COMMAND in message.content:
-                    mylogger.info(f"!noredact detected by {message.author.name}")
+                    mylogger.info(f"!bypass detected by {message.author.name}")
                     embed = discord.Embed(
-                        title="💥NOREDACT Override Detected!💥",
+                        title="💥BYPASS Override Detected!💥",
                         description=(
                             f"**💥Redaction Override Detected!💥** ↑↑↑ {message.author.mention}, I hope you know what you are doing?!?\n\n"
                             f"*This message will self-destruct in 30 seconds...*"
