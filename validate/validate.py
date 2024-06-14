@@ -71,6 +71,7 @@ class RedBotCogValidate(commands.Cog):
 
         # Add reaction emoji to the message based on validation result
         if is_valid:
+            pass
             # await message.add_reaction('🇾')  # Letter Y
             # await message.add_reaction('🇦')  # Letter A
             # await message.add_reaction('🇲')  # Letter M
