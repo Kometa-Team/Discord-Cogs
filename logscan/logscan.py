@@ -1417,7 +1417,7 @@ class RedBotCogLogscan(commands.Cog):
             # Construct the message with server names and versions
             rounding_errors_message = (
                 "⚠️ **USER RATINGS ROUNDING ISSUE**\n"
-                "We have detected that you are running `mass_user_rating_update` or `mass_episode_user_ratings_update` with Plex versions that will cause rounding issues with user ratings. To avoid this, downgrade your Plex Media server to `1.40.0.7998 or upgrade it to 1.40.3.8555 or later`.\n"
+                "We have detected that you are running `mass_user_rating_update` or `mass_episode_user_ratings_update` with Plex versions that will cause rounding issues with user ratings. To avoid this, downgrade your Plex Media server to `1.40.0.7998` or upgrade it to `1.40.3.8555` or later.\n"
                 f"For more information on this issue, {url_line}\n"
                 f"Detected issues on the following servers:\n"
             )
