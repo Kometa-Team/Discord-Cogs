@@ -1622,11 +1622,15 @@ class RedBotCogLogscan(commands.Cog):
                         my_server_version = server_info['version']
 
                         stable_version = "1.40.0.7998-c29d4c0c8"
+                        good_version = "1.40.3.8555-fef15d30c"
 
-                        if my_server_version > stable_version:
-                            mylogger.info(f"Server Name: {my_server_name} has Version: {my_server_version}. Potential Rounding Issue because > {stable_version}")
+                        if stable_version < my_server_version < good_version:
+                            mylogger.info(
+                                f"Server Name: {my_server_name} has Version: {my_server_version}. Potential Rounding Issue because > {stable_version} and < {good_version}")
                             # Store the server version globally in a list
                             self.server_versions.append((my_server_name, my_server_version))
+                        elif my_server_version >= good_version:
+                            mylogger.info(f"Server Name: {my_server_name} has Version: {my_server_version}. ALL GOOD")
                         else:
                             mylogger.info(f"Server Name: {my_server_name} has Version: {my_server_version}. ALL GOOD")
 
