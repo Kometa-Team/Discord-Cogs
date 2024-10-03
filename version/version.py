@@ -78,12 +78,13 @@ class MyVersion(commands.Cog):
             # Add a new line before the "Update Instructions" header
             update_text = (
                 f"Hey {user.mention}, if you are looking for guidance on how to update, "
-                "please type one of the following commands:\n\n"
+                "type one of the following commands:\n\n"
                 "`!updategit` if you are running Kometa locally (i.e. you cloned the repository using Git)\n\n"
                 "`!updatedocker` if you are running Kometa within Docker\n\n"
                 "`!updateunraid` if you are running Docker on Unraid"
             )
-            embed.add_field(name="\nUpdate Instructions", value=update_text, inline=False)
+            embed.add_field(name="", value="", inline=False)
+            embed.add_field(name="Update Instructions", value=update_text, inline=False)
 
             return embed
 
