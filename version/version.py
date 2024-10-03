@@ -138,15 +138,15 @@ class MyVersion(commands.Cog):
                 self.add_item(UpdateInstructionsButton(user))  # Add the update instructions button
 
         # Send the initial message with the dropdown and button
-        message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=VersionView(ctx.author))
+        view = VersionView(ctx.author)  # Create the view to keep track of it
+        message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=view)
 
         # Wait for 10 minutes (600 seconds), then disable the buttons and dropdown
         await asyncio.sleep(20)  # 10 minutes
         
         # Disable all components (buttons and dropdowns)
-        for item in message.components:
-            for component in item.children:
-                component.disabled = True
+        for item in view.children:
+            item.disabled = True
 
         # Check if the message contains embeds before accessing it
         if message.embeds:
@@ -159,4 +159,4 @@ class MyVersion(commands.Cog):
         expired_embed.set_footer(text="This interaction has expired. Please type `!version` to use it again.")
 
         # Edit the message to disable the components and show the expired message
-        await message.edit(embed=expired_embed, view=message.components)
+        await message.edit(embed=expired_embed, view=view)  # Use the original view with disabled components
