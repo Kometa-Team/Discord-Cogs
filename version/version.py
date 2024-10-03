@@ -82,7 +82,7 @@ class MyVersion(commands.Cog):
         async def build_update_instructions_embed(user):
             embed = discord.Embed(
                 title="Update Instructions",
-                description=f"Hey {user.mention}, here are the instructions to update your setup:",
+                description=f"Here are the commands to use in our Discord server to get instructions:",
                 color=discord.Color.green()
             )
 
