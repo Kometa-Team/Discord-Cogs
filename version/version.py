@@ -73,7 +73,7 @@ class MyVersion(commands.Cog):
             
             # Only add the field if version_text is not empty
             if version_text:
-                embed.add_field(name=f"{project_name} Versions", value=version_text.strip()"\n", inline=False)
+                embed.add_field(name=f"{project_name} Versions", value=version_text.strip()+"\n", inline=False)
 
             # Add a new line before the "Update Instructions" header
             update_text = (
