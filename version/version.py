@@ -148,8 +148,14 @@ class MyVersion(commands.Cog):
             for component in item.children:
                 component.disabled = True
 
-        # Create a new embed to show the expiration message
-        expired_embed = message.embeds[0]
+        # Check if the message contains embeds before accessing it
+        if message.embeds:
+            expired_embed = message.embeds[0]
+        else:
+            # Fallback if no embed is present
+            expired_embed = discord.Embed(title="Interaction Expired", color=discord.Color.red())
+
+        # Set the footer to notify the user that the interaction has expired
         expired_embed.set_footer(text="This interaction has expired. Please type `!version` to use it again.")
 
         # Edit the message to disable the components and show the expired message
