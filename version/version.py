@@ -59,7 +59,7 @@ class MyVersion(commands.Cog):
             )
             embed.add_field(name="Update Instructions", value=update_text, inline=False)
 
-            embed.set_footer(text="Please refer to the official documentation for more details.")
+            # embed.set_footer(text="Please refer to the official documentation for more details.")
 
             # Send the embed message
             await ctx.send(embed=embed)
