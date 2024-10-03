@@ -141,8 +141,8 @@ class MyVersion(commands.Cog):
         view = VersionView(ctx.author)  # Create the view to keep track of it
         message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=view)
 
-        # Wait for 10 minutes (600 seconds), then disable the buttons and dropdown
-        await asyncio.sleep(20)  # 10 minutes
+        # Wait for 3 minutes (180 seconds), then disable the buttons and dropdown
+        await asyncio.sleep(180)  # 3 minutes
         
         # Disable all components (buttons and dropdowns)
         for item in view.children:
