@@ -58,7 +58,7 @@ class MyVersion(commands.Cog):
         # Build the version information embed
         async def build_version_embed(project_name, versions, user):
             embed = discord.Embed(
-                color=discord.Color.blue()
+                color=discord.Color.random()  # Random color
             )
 
             version_text = ""
@@ -83,7 +83,7 @@ class MyVersion(commands.Cog):
             embed = discord.Embed(
                 title="Update Instructions",
                 description=f"Here are the commands to use in our Discord server to get instructions:",
-                color=discord.Color.green()
+                color=discord.Color.random()  # Random color
             )
 
             update_text = (
