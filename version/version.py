@@ -43,14 +43,23 @@ class MyVersion(commands.Cog):
             embed = discord.Embed(
                 title="Current Kometa Releases",
                 description="Here are the current versions of Kometa across different branches.",
-                color=discord.Color.blue()  # You can use random colors like in the fact cog if needed
+                color=discord.Color.blue()
             )
 
             # Add version information to the embed
             for name, version in versions.items():
                 embed.add_field(name=f"{name}:", value=version, inline=False)
 
-            embed.set_footer(text="If you are looking for guidance on how to update Kometa, please refer to the official documentation.")
+            # Add the extra guidance text
+            update_text = (
+                "If you are looking for guidance on how to update Kometa, please type one of the following commands\n\n"
+                "`!updategit` if you are running Kometa locally (i.e. you cloned the repository using Git)\n\n"
+                "`!updatedocker` if you are running Kometa within docker\n\n"
+                "`!updateunraid` if you are running docker on Unraid"
+            )
+            embed.add_field(name="Update Instructions", value=update_text, inline=False)
+
+            embed.set_footer(text="Please refer to the official documentation for more details.")
 
             # Send the embed message
             await ctx.send(embed=embed)
