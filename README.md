@@ -23,3 +23,12 @@ To install a cog, use this command, replacing <cog> with the name of the cog you
 .. code-block:: ini
 
     [p]cog install Kometa <cog>
+
+Then you can use commands like:
+
+.. code-block:: ini
+
+    [p]cog update
+    [p]unload <cog>
+    [p]load <cog>
+    [p]reload <cog>

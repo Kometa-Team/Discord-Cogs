@@ -143,14 +143,14 @@ class MyVersion(commands.Cog):
         # Wait for 10 minutes (600 seconds), then disable the buttons and dropdown
         await asyncio.sleep(20)  # 10 minutes
         
-        # Disable all items in the view (buttons and dropdown)
+        # Disable all components (buttons and dropdowns)
         for item in message.components:
-            for component in item['components']:
-                component['disabled'] = True
+            for component in item.children:
+                component.disabled = True
 
         # Create a new embed to show the expiration message
         expired_embed = message.embeds[0]
         expired_embed.set_footer(text="This interaction has expired. Please type `!version` to use it again.")
 
         # Edit the message to disable the components and show the expired message
-        await message.edit(embed=expired_embed, components=message.components)
+        await message.edit(embed=expired_embed, view=message.components)
