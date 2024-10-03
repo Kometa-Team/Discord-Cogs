@@ -5,7 +5,7 @@ from discord.ext import commands
 from redbot.core import commands, app_commands
 
 # Create logger
-mylogger = logging.getLogger('version_fetcher')
+mylogger = logging.getLogger('version')
 mylogger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
 
 class MyVersion(commands.Cog):
@@ -28,6 +28,14 @@ class MyVersion(commands.Cog):
     @app_commands.describe(message_link="Fetch the current release versions of Kometa")
     @commands.cooldown(1, 60, commands.BucketType.user)  # 1 command per 60 seconds per user
     async def version(self, ctx: commands.Context):
+        # Extract necessary information for logging
+        author_name = f"{ctx.author.name}#{ctx.author.discriminator}"
+        guild_name = ctx.guild.name if ctx.guild else "Direct Message"
+        channel_name = ctx.channel.name if isinstance(ctx.channel, discord.TextChannel) else "Direct Message"
+        
+        # Log the invocation details
+        mylogger.info(f"version invoked by {author_name} in {guild_name}/{channel_name} (ID: {ctx.guild.id if ctx.guild else 'N/A'}/{ctx.channel.id if ctx.channel else 'N/A'})")
+        
         try:
             # URLs to fetch versions from
             urls = {
@@ -58,8 +66,6 @@ class MyVersion(commands.Cog):
                 "`!updateunraid` if you are running docker on Unraid"
             )
             embed.add_field(name="Update Instructions", value=update_text, inline=False)
-
-            # embed.set_footer(text="Please refer to the official documentation for more details.")
 
             # Send the embed message
             await ctx.send(embed=embed)
