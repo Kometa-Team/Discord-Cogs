@@ -70,13 +70,15 @@ class MyVersion(commands.Cog):
                 version_text += f"Develop: {versions['Develop']}\n"
             if versions["Nightly"] != "Unknown":
                 version_text += f"Nightly: {versions['Nightly']}\n"
+            
+            # Only add the field if version_text is not empty
             if version_text:
                 embed.add_field(name=f"{project_name} Versions", value=version_text.strip(), inline=False)
 
-            # Add a line separator before the update instructions
-            separator = "\n\u200b\n"  # Empty line separator
+            # Add a new line before the "Update Instructions" header
             update_text = (
-                f"{separator}Hey {user.mention}, if you are looking for guidance on how to update, "
+                f"\nUpdate Instructions\n"
+                f"Hey {user.mention}, if you are looking for guidance on how to update, "
                 "please type one of the following commands:\n\n"
                 "`!updategit` if you are running Kometa locally (i.e. you cloned the repository using Git)\n\n"
                 "`!updatedocker` if you are running Kometa within Docker\n\n"
