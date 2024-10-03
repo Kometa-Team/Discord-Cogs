@@ -58,8 +58,8 @@ class MyVersion(commands.Cog):
         # Build the embed based on the selected project
         async def build_embed(project_name, versions, user):
             embed = discord.Embed(
-                title=f"Current Releases for {project_name}",
-                description=f"Here are the current versions for {project_name}.",
+                # title=f"Current Releases for {project_name}",
+                # description=f"Here are the current versions for {project_name}.",
                 color=discord.Color.blue()
             )
 
