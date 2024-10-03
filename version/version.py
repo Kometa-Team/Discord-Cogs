@@ -56,7 +56,7 @@ class MyVersion(commands.Cog):
         overlay_reset_versions = get_versions(overlay_reset_urls)
 
         # Build the embed based on the selected project
-        async def build_embed(project_name, versions):
+        async def build_embed(project_name, versions, user):
             embed = discord.Embed(
                 title=f"Current Releases for {project_name}",
                 description=f"Here are the current versions for {project_name}.",
@@ -73,9 +73,11 @@ class MyVersion(commands.Cog):
             if version_text:
                 embed.add_field(name=f"{project_name} Versions", value=version_text.strip(), inline=False)
 
-            # Add update instructions
+            # Add a line separator before the update instructions
+            separator = "\n\u200b\n"  # Empty line separator
             update_text = (
-                "If you are looking for guidance on how to update, please type one of the following commands:\n\n"
+                f"{separator}Hey {user.mention}, if you are looking for guidance on how to update, "
+                "please type one of the following commands:\n\n"
                 "`!updategit` if you are running Kometa locally (i.e. you cloned the repository using Git)\n\n"
                 "`!updatedocker` if you are running Kometa within Docker\n\n"
                 "`!updateunraid` if you are running Docker on Unraid"
@@ -96,12 +98,13 @@ class MyVersion(commands.Cog):
 
             async def callback(self, interaction: discord.Interaction):
                 project_name = self.values[0]
+                user = interaction.user  # Get the user who made the interaction
                 if project_name == "Kometa":
-                    embed = await build_embed("Kometa", kometa_versions)
+                    embed = await build_embed("Kometa", kometa_versions, user)
                 elif project_name == "ImageMaid":
-                    embed = await build_embed("ImageMaid", imagemaid_versions)
+                    embed = await build_embed("ImageMaid", imagemaid_versions, user)
                 else:
-                    embed = await build_embed("Kometa Overlay Reset", overlay_reset_versions)
+                    embed = await build_embed("Kometa Overlay Reset", overlay_reset_versions, user)
 
                 await interaction.response.edit_message(embed=embed)
 
@@ -113,4 +116,3 @@ class MyVersion(commands.Cog):
 
         # Initial message with the dropdown
         await ctx.send("Select a project to view its current releases:", view=VersionView())
-
