@@ -28,82 +28,52 @@ class MyVersion(commands.Cog):
     @app_commands.describe(message_link="Fetch the current release versions of Kometa, ImageMaid, and Kometa Overlay Reset")
     @commands.cooldown(1, 60, commands.BucketType.user)  # 1 command per 60 seconds per user
     async def version(self, ctx: commands.Context):
-        # Extract necessary information for logging
-        author_name = f"{ctx.author.name}#{ctx.author.discriminator}"
-        guild_name = ctx.guild.name if ctx.guild else "Direct Message"
-        channel_name = ctx.channel.name if isinstance(ctx.channel, discord.TextChannel) else "Direct Message"
+        # URLs for each project
+        kometa_urls = {
+            "Master": "https://github.com/Kometa-Team/Kometa/blob/master/VERSION",
+            "Develop": "https://github.com/Kometa-Team/Kometa/blob/develop/VERSION",
+            "Nightly": "https://github.com/Kometa-Team/Kometa/blob/nightly/VERSION"
+        }
         
-        # Log the invocation details
-        mylogger.info(f"version invoked by {author_name} in {guild_name}/{channel_name} (ID: {ctx.guild.id if ctx.guild else 'N/A'}/{ctx.channel.id if ctx.channel else 'N/A'})")
+        imagemaid_urls = {
+            "Master": "https://github.com/Kometa-Team/ImageMaid/blob/master/VERSION",
+            "Develop": "https://github.com/Kometa-Team/ImageMaid/blob/develop/VERSION",
+            "Nightly": "https://github.com/Kometa-Team/ImageMaid/blob/nightly/VERSION"
+        }
         
-        try:
-            # URLs for Kometa
-            kometa_urls = {
-                "Master": "https://github.com/Kometa-Team/Kometa/blob/master/VERSION",
-                "Develop": "https://github.com/Kometa-Team/Kometa/blob/develop/VERSION",
-                "Nightly": "https://github.com/Kometa-Team/Kometa/blob/nightly/VERSION"
-            }
-            
-            # URLs for ImageMaid
-            imagemaid_urls = {
-                "Master": "https://github.com/Kometa-Team/ImageMaid/blob/master/VERSION",
-                "Develop": "https://github.com/Kometa-Team/ImageMaid/blob/develop/VERSION",
-                "Nightly": "https://github.com/Kometa-Team/ImageMaid/blob/nightly/VERSION"
-            }
-            
-            # URLs for Kometa Overlay Reset
-            overlay_reset_urls = {
-                "Master": "https://github.com/Kometa-Team/Overlay-Reset/blob/master/VERSION",
-                "Develop": "https://github.com/Kometa-Team/Overlay-Reset/blob/develop/VERSION",
-                "Nightly": "https://github.com/Kometa-Team/Overlay-Reset/blob/nightly/VERSION"
-            }
+        overlay_reset_urls = {
+            "Master": "https://github.com/Kometa-Team/Overlay-Reset/blob/master/VERSION",
+            "Develop": "https://github.com/Kometa-Team/Overlay-Reset/blob/develop/VERSION",
+            "Nightly": "https://github.com/Kometa-Team/Overlay-Reset/blob/nightly/VERSION"
+        }
 
-            # Fetch version content from each URL group
-            kometa_versions = {name: self.get_version_from_url(url) for name, url in kometa_urls.items()}
-            imagemaid_versions = {name: self.get_version_from_url(url) for name, url in imagemaid_urls.items()}
-            overlay_reset_versions = {name: self.get_version_from_url(url) for name, url in overlay_reset_urls.items()}
+        # Function to get versions for each project
+        def get_versions(urls):
+            return {name: self.get_version_from_url(url) for name, url in urls.items()}
 
-            # Create the embedded message
+        kometa_versions = get_versions(kometa_urls)
+        imagemaid_versions = get_versions(imagemaid_urls)
+        overlay_reset_versions = get_versions(overlay_reset_urls)
+
+        # Build the embed based on the selected project
+        async def build_embed(project_name, versions):
             embed = discord.Embed(
-                title="Current Releases for Kometa, ImageMaid, and Kometa Overlay Reset",
-                description="Here are the current versions across different branches.",
+                title=f"Current Releases for {project_name}",
+                description=f"Here are the current versions for {project_name}.",
                 color=discord.Color.blue()
             )
 
-            # Add Kometa versions to the embed (omit "Unknown" versions)
-            kometa_version_text = ""
-            if kometa_versions["Master"] != "Unknown":
-                kometa_version_text += f"Master: {kometa_versions['Master']}\n"
-            if kometa_versions["Develop"] != "Unknown":
-                kometa_version_text += f"Develop: {kometa_versions['Develop']}\n"
-            if kometa_versions["Nightly"] != "Unknown":
-                kometa_version_text += f"Nightly: {kometa_versions['Nightly']}\n"
-            if kometa_version_text:
-                embed.add_field(name="Kometa Versions", value=kometa_version_text.strip(), inline=False)
+            version_text = ""
+            if versions["Master"] != "Unknown":
+                version_text += f"Master: {versions['Master']}\n"
+            if versions["Develop"] != "Unknown":
+                version_text += f"Develop: {versions['Develop']}\n"
+            if versions["Nightly"] != "Unknown":
+                version_text += f"Nightly: {versions['Nightly']}\n"
+            if version_text:
+                embed.add_field(name=f"{project_name} Versions", value=version_text.strip(), inline=False)
 
-            # Add ImageMaid versions to the embed (omit "Unknown" versions)
-            imagemaid_version_text = ""
-            if imagemaid_versions["Master"] != "Unknown":
-                imagemaid_version_text += f"Master: {imagemaid_versions['Master']}\n"
-            if imagemaid_versions["Develop"] != "Unknown":
-                imagemaid_version_text += f"Develop: {imagemaid_versions['Develop']}\n"
-            if imagemaid_versions["Nightly"] != "Unknown":
-                imagemaid_version_text += f"Nightly: {imagemaid_versions['Nightly']}\n"
-            if imagemaid_version_text:
-                embed.add_field(name="ImageMaid Versions", value=imagemaid_version_text.strip(), inline=False)
-
-            # Add Kometa Overlay Reset versions to the embed (omit "Unknown" versions)
-            overlay_reset_version_text = ""
-            if overlay_reset_versions["Master"] != "Unknown":
-                overlay_reset_version_text += f"Master: {overlay_reset_versions['Master']}\n"
-            if overlay_reset_versions["Develop"] != "Unknown":
-                overlay_reset_version_text += f"Develop: {overlay_reset_versions['Develop']}\n"
-            if overlay_reset_versions["Nightly"] != "Unknown":
-                overlay_reset_version_text += f"Nightly: {overlay_reset_versions['Nightly']}\n"
-            if overlay_reset_version_text:
-                embed.add_field(name="Kometa Overlay Reset Versions", value=overlay_reset_version_text.strip(), inline=False)
-
-            # Add the extra guidance text
+            # Add update instructions
             update_text = (
                 "If you are looking for guidance on how to update, please type one of the following commands:\n\n"
                 "`!updategit` if you are running Kometa locally (i.e. you cloned the repository using Git)\n\n"
@@ -112,9 +82,35 @@ class MyVersion(commands.Cog):
             )
             embed.add_field(name="Update Instructions", value=update_text, inline=False)
 
-            # Send the embed message
-            await ctx.send(embed=embed)
+            return embed
 
-        except Exception as e:
-            mylogger.error(f"Error fetching versions: {e}")
-            await ctx.send(f"An error occurred while fetching the versions: {e}")
+        # Dropdown menu interaction
+        class VersionSelect(discord.ui.Select):
+            def __init__(self):
+                options = [
+                    discord.SelectOption(label="Kometa", description="View Kometa versions"),
+                    discord.SelectOption(label="ImageMaid", description="View ImageMaid versions"),
+                    discord.SelectOption(label="Overlay Reset", description="View Kometa Overlay Reset versions")
+                ]
+                super().__init__(placeholder="Choose a project...", options=options)
+
+            async def callback(self, interaction: discord.Interaction):
+                project_name = self.values[0]
+                if project_name == "Kometa":
+                    embed = await build_embed("Kometa", kometa_versions)
+                elif project_name == "ImageMaid":
+                    embed = await build_embed("ImageMaid", imagemaid_versions)
+                else:
+                    embed = await build_embed("Kometa Overlay Reset", overlay_reset_versions)
+
+                await interaction.response.edit_message(embed=embed)
+
+        # View to handle the dropdown menu
+        class VersionView(discord.ui.View):
+            def __init__(self):
+                super().__init__()
+                self.add_item(VersionSelect())
+
+        # Initial message with the dropdown
+        await ctx.send("Select a project to view its current releases:", view=VersionView())
+
