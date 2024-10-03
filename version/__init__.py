@@ -1,4 +1,4 @@
-from .fact import MyVersion
+from .version import MyVersion
 
 
 async def setup(bot):
