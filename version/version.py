@@ -55,8 +55,8 @@ class MyVersion(commands.Cog):
         imagemaid_versions = get_versions(imagemaid_urls)
         overlay_reset_versions = get_versions(overlay_reset_urls)
 
-        # Build the embed based on the selected project
-        async def build_embed(project_name, versions, user):
+        # Build the version information embed
+        async def build_version_embed(project_name, versions, user):
             embed = discord.Embed(
                 # title=f"Current Releases for {project_name}",
                 # description=f"Here are the current versions for {project_name}.",
@@ -71,22 +71,42 @@ class MyVersion(commands.Cog):
             if versions["Nightly"] != "Unknown":
                 version_text += f"Nightly: {versions['Nightly']}\n"
             
-        # Ensure there's a newline at the end of version_text for proper spacing
+            # Only add the field if version_text is not empty
             if version_text:
                 version_text = version_text.strip() + "\n"
                 embed.add_field(name=f"{project_name} Versions", value=version_text, inline=False)
 
-            # Add a new line before the "Update Instructions" header
+            # Mention the user that the update instructions are on a separate page
+            embed.set_footer(text="Click the button below to see update instructions.")
+            return embed
+
+        # Build the update instructions embed
+        async def build_update_instructions_embed(user):
+            embed = discord.Embed(
+                title="Update Instructions",
+                description=f"Hey {user.mention}, here are the instructions to update your setup:",
+                color=discord.Color.green()
+            )
+
             update_text = (
-                f"Hey {user.mention}, if you are looking for guidance on how to update, "
-                "type one of the following commands:\n\n"
                 "`!updategit` if you are running Kometa locally (i.e. you cloned the repository using Git)\n\n"
                 "`!updatedocker` if you are running Kometa within Docker\n\n"
                 "`!updateunraid` if you are running Docker on Unraid"
             )
-            embed.add_field(name="Update Instructions", value=update_text, inline=False)
+            embed.add_field(name="Commands", value=update_text, inline=False)
 
             return embed
+
+        # Buttons for navigation
+        class UpdateInstructionsButton(discord.ui.Button):
+            def __init__(self, user):
+                super().__init__(label="Update Instructions", style=discord.ButtonStyle.primary)
+                self.user = user
+
+            async def callback(self, interaction: discord.Interaction):
+                # Build and send the update instructions embed when button is clicked
+                embed = await build_update_instructions_embed(self.user)
+                await interaction.response.edit_message(embed=embed, view=None)
 
         # Dropdown menu interaction
         class VersionSelect(discord.ui.Select):
@@ -102,13 +122,16 @@ class MyVersion(commands.Cog):
                 project_name = self.values[0]
                 user = interaction.user  # Get the user who made the interaction
                 if project_name == "Kometa":
-                    embed = await build_embed("Kometa", kometa_versions, user)
+                    embed = await build_version_embed("Kometa", kometa_versions, user)
                 elif project_name == "ImageMaid":
-                    embed = await build_embed("ImageMaid", imagemaid_versions, user)
+                    embed = await build_version_embed("ImageMaid", imagemaid_versions, user)
                 else:
-                    embed = await build_embed("Kometa Overlay Reset", overlay_reset_versions, user)
+                    embed = await build_version_embed("Kometa Overlay Reset", overlay_reset_versions, user)
 
-                await interaction.response.edit_message(embed=embed)
+                # Show the version info with a button to view update instructions
+                view = discord.ui.View()
+                view.add_item(UpdateInstructionsButton(user))
+                await interaction.response.edit_message(embed=embed, view=view)
 
         # View to handle the dropdown menu
         class VersionView(discord.ui.View):
