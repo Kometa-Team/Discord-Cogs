@@ -71,9 +71,10 @@ class MyVersion(commands.Cog):
             if versions["Nightly"] != "Unknown":
                 version_text += f"Nightly: {versions['Nightly']}\n"
             
-            # Only add the field if version_text is not empty
+        # Ensure there's a newline at the end of version_text for proper spacing
             if version_text:
-                embed.add_field(name=f"{project_name} Versions", value=version_text.strip()+"\n", inline=False)
+                version_text = version_text.strip() + "\n"
+                embed.add_field(name=f"{project_name} Versions", value=version_text, inline=False)
 
             # Add a new line before the "Update Instructions" header
             update_text = (
