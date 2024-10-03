@@ -58,8 +58,6 @@ class MyVersion(commands.Cog):
         # Build the version information embed
         async def build_version_embed(project_name, versions, user):
             embed = discord.Embed(
-                # title=f"Current Releases for {project_name}",
-                # description=f"Here are the current versions for {project_name}.",
                 color=discord.Color.blue()
             )
 
@@ -140,4 +138,4 @@ class MyVersion(commands.Cog):
                 self.add_item(VersionSelect())
 
         # Initial message with the dropdown
-        await ctx.send("Select a project to view its current releases:", view=VersionView())
+        await ctx.send("Hey {user.mention}, select a project to view its current releases:", view=VersionView())
