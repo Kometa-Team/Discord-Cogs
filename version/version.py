@@ -70,20 +70,20 @@ class MyVersion(commands.Cog):
                 color=discord.Color.blue()
             )
 
-            # Add Kometa versions to the embed
-            embed.add_field(name="**Kometa Versions**", value="Here are the Kometa release versions:", inline=False)
-            for name, version in kometa_versions.items():
-                embed.add_field(name=f"{name}:", value=version, inline=False)
+            # Add Kometa versions to the embed with inline fields
+            embed.add_field(name="**Kometa Master**", value=kometa_versions["Master"], inline=True)
+            embed.add_field(name="**Kometa Develop**", value=kometa_versions["Develop"], inline=True)
+            embed.add_field(name="**Kometa Nightly**", value=kometa_versions["Nightly"], inline=True)
 
-            # Add ImageMaid versions to the embed
-            embed.add_field(name="**ImageMaid Versions**", value="Here are the ImageMaid release versions:", inline=False)
-            for name, version in imagemaid_versions.items():
-                embed.add_field(name=f"{name}:", value=version, inline=False)
+            # Add ImageMaid versions to the embed with inline fields
+            embed.add_field(name="**ImageMaid Master**", value=imagemaid_versions["Master"], inline=True)
+            embed.add_field(name="**ImageMaid Develop**", value=imagemaid_versions["Develop"], inline=True)
+            embed.add_field(name="**ImageMaid Nightly**", value=imagemaid_versions["Nightly"], inline=True)
 
-            # Add Overlay Reset versions to the embed
-            embed.add_field(name="**Kometa Overlay Reset Versions**", value="Here are the Kometa Overlay Reset release versions:", inline=False)
-            for name, version in overlay_reset_versions.items():
-                embed.add_field(name=f"{name}:", value=version, inline=False)
+            # Add Overlay Reset versions to the embed with inline fields
+            embed.add_field(name="**Overlay Reset Master**", value=overlay_reset_versions["Master"], inline=True)
+            embed.add_field(name="**Overlay Reset Develop**", value=overlay_reset_versions["Develop"], inline=True)
+            embed.add_field(name="**Overlay Reset Nightly**", value=overlay_reset_versions["Nightly"], inline=True)
 
             # Add the extra guidance text
             update_text = (
