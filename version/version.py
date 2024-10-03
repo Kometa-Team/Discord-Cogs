@@ -70,20 +70,38 @@ class MyVersion(commands.Cog):
                 color=discord.Color.blue()
             )
 
-            # Add Kometa versions to the embed with inline fields
-            embed.add_field(name="**Kometa Master**", value=kometa_versions["Master"], inline=True)
-            embed.add_field(name="**Kometa Develop**", value=kometa_versions["Develop"], inline=True)
-            embed.add_field(name="**Kometa Nightly**", value=kometa_versions["Nightly"], inline=True)
+            # Add Kometa versions to the embed (omit "Unknown" versions)
+            kometa_version_text = ""
+            if kometa_versions["Master"] != "Unknown":
+                kometa_version_text += f"Master: {kometa_versions['Master']}\n"
+            if kometa_versions["Develop"] != "Unknown":
+                kometa_version_text += f"Develop: {kometa_versions['Develop']}\n"
+            if kometa_versions["Nightly"] != "Unknown":
+                kometa_version_text += f"Nightly: {kometa_versions['Nightly']}\n"
+            if kometa_version_text:
+                embed.add_field(name="Kometa Versions", value=kometa_version_text.strip(), inline=False)
 
-            # Add ImageMaid versions to the embed with inline fields
-            embed.add_field(name="**ImageMaid Master**", value=imagemaid_versions["Master"], inline=True)
-            embed.add_field(name="**ImageMaid Develop**", value=imagemaid_versions["Develop"], inline=True)
-            embed.add_field(name="**ImageMaid Nightly**", value=imagemaid_versions["Nightly"], inline=True)
+            # Add ImageMaid versions to the embed (omit "Unknown" versions)
+            imagemaid_version_text = ""
+            if imagemaid_versions["Master"] != "Unknown":
+                imagemaid_version_text += f"Master: {imagemaid_versions['Master']}\n"
+            if imagemaid_versions["Develop"] != "Unknown":
+                imagemaid_version_text += f"Develop: {imagemaid_versions['Develop']}\n"
+            if imagemaid_versions["Nightly"] != "Unknown":
+                imagemaid_version_text += f"Nightly: {imagemaid_versions['Nightly']}\n"
+            if imagemaid_version_text:
+                embed.add_field(name="ImageMaid Versions", value=imagemaid_version_text.strip(), inline=False)
 
-            # Add Overlay Reset versions to the embed with inline fields
-            embed.add_field(name="**Overlay Reset Master**", value=overlay_reset_versions["Master"], inline=True)
-            embed.add_field(name="**Overlay Reset Develop**", value=overlay_reset_versions["Develop"], inline=True)
-            embed.add_field(name="**Overlay Reset Nightly**", value=overlay_reset_versions["Nightly"], inline=True)
+            # Add Kometa Overlay Reset versions to the embed (omit "Unknown" versions)
+            overlay_reset_version_text = ""
+            if overlay_reset_versions["Master"] != "Unknown":
+                overlay_reset_version_text += f"Master: {overlay_reset_versions['Master']}\n"
+            if overlay_reset_versions["Develop"] != "Unknown":
+                overlay_reset_version_text += f"Develop: {overlay_reset_versions['Develop']}\n"
+            if overlay_reset_versions["Nightly"] != "Unknown":
+                overlay_reset_version_text += f"Nightly: {overlay_reset_versions['Nightly']}\n"
+            if overlay_reset_version_text:
+                embed.add_field(name="Kometa Overlay Reset Versions", value=overlay_reset_version_text.strip(), inline=False)
 
             # Add the extra guidance text
             update_text = (
