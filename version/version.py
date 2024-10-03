@@ -104,7 +104,7 @@ class MyVersion(commands.Cog):
             async def callback(self, interaction: discord.Interaction):
                 # Build and send the update instructions embed when button is clicked
                 embed = await build_update_instructions_embed(self.user)
-                await interaction.response.edit_message(embed=embed, view=None)
+                await interaction.response.edit_message(embed=embed, view=self.view)  # Keep the button view active
 
         # Dropdown menu interaction
         class VersionSelect(discord.ui.Select):
@@ -127,15 +127,14 @@ class MyVersion(commands.Cog):
                     embed = await build_version_embed("Kometa Overlay Reset", overlay_reset_versions, user)
 
                 # Show the version info with a button to view update instructions
-                view = discord.ui.View()
-                view.add_item(UpdateInstructionsButton(user))
-                await interaction.response.edit_message(embed=embed, view=view)
+                await interaction.response.edit_message(embed=embed, view=self.view)  # Keep dropdown and button view active
 
-        # View to handle the dropdown menu
+        # View to handle the dropdown menu and button
         class VersionView(discord.ui.View):
-            def __init__(self):
+            def __init__(self, user):
                 super().__init__()
                 self.add_item(VersionSelect())
+                self.add_item(UpdateInstructionsButton(user))  # Add the update instructions button
 
-        # Initial message with the dropdown
-        await ctx.send("Hey {user.mention}, select a project to view its current releases:", view=VersionView())
+        # Initial message with the dropdown and button
+        await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=VersionView(ctx.author))
