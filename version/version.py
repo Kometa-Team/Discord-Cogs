@@ -3,6 +3,7 @@ import requests
 import logging
 from discord.ext import commands
 from redbot.core import commands, app_commands
+import asyncio  # To handle the timeout
 
 # Create logger
 mylogger = logging.getLogger('version')
@@ -136,5 +137,20 @@ class MyVersion(commands.Cog):
                 self.add_item(VersionSelect())
                 self.add_item(UpdateInstructionsButton(user))  # Add the update instructions button
 
-        # Initial message with the dropdown and button
-        await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=VersionView(ctx.author))
+        # Send the initial message with the dropdown and button
+        message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=VersionView(ctx.author))
+
+        # Wait for 10 minutes (600 seconds), then disable the buttons and dropdown
+        await asyncio.sleep(20)  # 10 minutes
+        
+        # Disable all items in the view (buttons and dropdown)
+        for item in message.components:
+            for component in item['components']:
+                component['disabled'] = True
+
+        # Create a new embed to show the expiration message
+        expired_embed = message.embeds[0]
+        expired_embed.set_footer(text="This interaction has expired. Please type `!version` to use it again.")
+
+        # Edit the message to disable the components and show the expired message
+        await message.edit(embed=expired_embed, components=message.components)
