@@ -55,20 +55,20 @@ class MyVersion(commands.Cog):
         # Define the GitHub page URLs for commits (not the raw URLs)
         kometa_commit_urls = {
             "Master": "https://github.com/Kometa-Team/Kometa/commits/master/VERSION",
-            "Develop": "https://github.com/Kometa-Team/Kometa/commits/develop/VERSION",
-            "Nightly": "https://github.com/Kometa-Team/Kometa/commits/nightly/VERSION"
+            # "Develop": "https://github.com/Kometa-Team/Kometa/commits/develop/VERSION",
+            # "Nightly": "https://github.com/Kometa-Team/Kometa/commits/nightly/VERSION"
         }
         
         imagemaid_commit_urls = {
-            "Master": "https://github.com/Kometa-Team/ImageMaid/commits/master/VERSION",
-            "Develop": "https://github.com/Kometa-Team/ImageMaid/commits/develop/VERSION",
-            "Nightly": "https://github.com/Kometa-Team/ImageMaid/commits/nightly/VERSION"
+            # "Master": "https://github.com/Kometa-Team/ImageMaid/commits/master/VERSION",
+            # "Develop": "https://github.com/Kometa-Team/ImageMaid/commits/develop/VERSION",
+            # "Nightly": "https://github.com/Kometa-Team/ImageMaid/commits/nightly/VERSION"
         }
         
         overlay_reset_commit_urls = {
-            "Master": "https://github.com/Kometa-Team/Overlay-Reset/commits/master/VERSION",
-            "Develop": "https://github.com/Kometa-Team/Overlay-Reset/commits/develop/VERSION",
-            "Nightly": "https://github.com/Kometa-Team/Overlay-Reset/commits/nightly/VERSION"
+            # "Master": "https://github.com/Kometa-Team/Overlay-Reset/commits/master/VERSION",
+            # "Develop": "https://github.com/Kometa-Team/Overlay-Reset/commits/develop/VERSION",
+            # "Nightly": "https://github.com/Kometa-Team/Overlay-Reset/commits/nightly/VERSION"
         }
 
         # Fetch version and commit date for each project
