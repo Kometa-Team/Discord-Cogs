@@ -77,6 +77,7 @@ class MyVersion(commands.Cog):
 
             return versions
 
+        # Build the version information embed
         async def build_version_embed(project_name, versions, user):
             embed = discord.Embed(color=discord.Color.random())
 
@@ -123,24 +124,12 @@ class MyVersion(commands.Cog):
 
             async def callback(self, interaction: discord.Interaction):
                 project_name = self.values[0]
-                user = interaction.user
+                user = interaction.user  # Get the user who made the interaction
                 project_versions = get_versions_for_project(project_name, repos[project_name])
+                embed = await build_version_embed(project_name, project_versions, user)
 
-                try:
-                    embed = await build_version_embed(project_name, project_versions, user)
-
-                    # Log the response status
-                    mylogger.info(f"Response is_done: {interaction.response.is_done()}")
-
-                    # Ensure interaction is acknowledged once
-                    if not interaction.response.is_done():
-                        await interaction.response.edit_message(embed=embed, view=None)
-                    else:
-                        await interaction.followup.send(embed=embed, ephemeral=True)
-
-                except discord.errors.NotFound:
-                    mylogger.error("Interaction not found or expired")
-                    await interaction.followup.send("This interaction has expired. Please use `!version` again.", ephemeral=True)
+                # Show the version info with a button to view update instructions
+                await interaction.response.edit_message(embed=embed, view=self.view)  # Keep dropdown and button view active
 
         # View to handle the dropdown menu and button
         class VersionView(discord.ui.View):
