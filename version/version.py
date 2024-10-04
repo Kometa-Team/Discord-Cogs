@@ -53,28 +53,14 @@ class MyVersion(commands.Cog):
     @app_commands.describe(message_link="Fetch the current release versions of Kometa, ImageMaid, and Kometa Overlay Reset")
     @commands.cooldown(1, 60, commands.BucketType.user)  # 1 command per 60 seconds per user
     async def version(self, ctx: commands.Context):
-        # GitHub repository owner and repos
         owner = "Kometa-Team"
         repos = {
-            "Kometa": {
-                "repo": "Kometa",
-                "branches": ["master", "develop", "nightly"],
-                "path": "VERSION"
-            },
-            "ImageMaid": {
-                "repo": "ImageMaid",
-                "branches": ["master", "develop", "nightly"],
-                "path": "VERSION"
-            },
-            "Overlay Reset": {
-                "repo": "Overlay-Reset",
-                "branches": ["master", "develop", "nightly"],
-                "path": "VERSION"
-            }
+            "Kometa": {"repo": "Kometa", "branches": ["master", "develop", "nightly"], "path": "VERSION"},
+            "ImageMaid": {"repo": "ImageMaid", "branches": ["master", "develop", "nightly"], "path": "VERSION"},
+            "Overlay Reset": {"repo": "Overlay-Reset", "branches": ["master", "develop", "nightly"], "path": "VERSION"}
         }
 
         def get_versions_for_project(project_name, project_data):
-            """Fetches versions and commit dates for the project."""
             versions = {}
             repo_name = project_data['repo']
             branches = project_data['branches']
@@ -89,54 +75,41 @@ class MyVersion(commands.Cog):
 
             return versions
 
-        # Build the version information embed
         async def build_version_embed(project_name, versions, user):
-            embed = discord.Embed(
-                color=discord.Color.random()  # Random color
-            )
+            embed = discord.Embed(color=discord.Color.random())
 
             version_text = ""
             for name, (version, date) in versions.items():
                 if version != "Unknown":
                     version_text += f"{name.capitalize()}: {version} (Updated: {date})\n"
-            
-            # Only add the field if version_text is not empty
+
             if version_text:
                 embed.add_field(name=f"{project_name} Versions", value=version_text.strip(), inline=False)
 
-            # Mention the user that the update instructions are on a separate page
             embed.set_footer(text="Click the button below to see update instructions.")
             return embed
 
-        # Build the update instructions embed
         async def build_update_instructions_embed(user):
-            embed = discord.Embed(
-                title="Update Instructions",
-                description=f"Here are the commands to use in our Discord server to get instructions:",
-                color=discord.Color.random()  # Random color
-            )
-
-            update_text = (
-                "`!updategit` if you are running kometateam apps locally (i.e. you cloned the repository using Git)\n\n"
-                "`!updatedocker` if you are running kometateam apps within Docker\n\n"
-                "`!updateunraid` if you are running kometateam apps within Docker on Unraid"
-            )
+            embed = discord.Embed(title="Update Instructions", description=f"Here are the commands to use:", color=discord.Color.random())
+            update_text = "`!updategit` if you are running kometateam apps locally\n`!updatedocker` if using kometateam apps in Docker\n`!updateunraid` for kometateam apps in Unraid"
             embed.add_field(name="Commands", value=update_text, inline=False)
-
             return embed
 
-        # Buttons for navigation
         class UpdateInstructionsButton(discord.ui.Button):
             def __init__(self, user):
                 super().__init__(label="Update Instructions", style=discord.ButtonStyle.primary)
                 self.user = user
 
             async def callback(self, interaction: discord.Interaction):
-                # Build and send the update instructions embed when button is clicked
-                embed = await build_update_instructions_embed(self.user)
-                await interaction.response.edit_message(embed=embed, view=self.view)  # Keep the button view active
+                try:
+                    embed = await build_update_instructions_embed(self.user)
+                    if not interaction.response.is_done():
+                        await interaction.response.edit_message(embed=embed, view=None)
+                    else:
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                except discord.errors.NotFound:
+                    await interaction.followup.send("This interaction has expired. Please use `!version` again.", ephemeral=True)
 
-        # Dropdown menu interaction
         class VersionSelect(discord.ui.Select):
             def __init__(self):
                 options = [
@@ -148,44 +121,36 @@ class MyVersion(commands.Cog):
 
             async def callback(self, interaction: discord.Interaction):
                 project_name = self.values[0]
-                user = interaction.user  # Get the user who made the interaction
-
-                # Fetch the versions for the selected project
+                user = interaction.user
                 project_versions = get_versions_for_project(project_name, repos[project_name])
 
-                # Build the embed for the selected project
-                embed = await build_version_embed(project_name, project_versions, user)
+                try:
+                    embed = await build_version_embed(project_name, project_versions, user)
+                    if not interaction.response.is_done():
+                        await interaction.response.edit_message(embed=embed, view=None)
+                    else:
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                except discord.errors.NotFound:
+                    await interaction.followup.send("This interaction has expired. Please use `!version` again.", ephemeral=True)
 
-                # Show the version info with a button to view update instructions
-                await interaction.response.edit_message(embed=embed, view=self.view)  # Keep dropdown and button view active
-
-        # View to handle the dropdown menu and button
         class VersionView(discord.ui.View):
             def __init__(self, user):
                 super().__init__()
                 self.add_item(VersionSelect())
-                self.add_item(UpdateInstructionsButton(user))  # Add the update instructions button
+                self.add_item(UpdateInstructionsButton(user))
 
-        # Send the initial message with the dropdown and button
-        view = VersionView(ctx.author)  # Create the view to keep track of it
+        view = VersionView(ctx.author)
         message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=view)
 
-        # Wait for 3 minutes (180 seconds), then disable the buttons and dropdown
-        await asyncio.sleep(180)  # 3 minutes
-        
-        # Disable all components (buttons and dropdowns)
+        await asyncio.sleep(180)
+
         for item in view.children:
             item.disabled = True
 
-        # Check if the message contains embeds before accessing it
         if message.embeds:
             expired_embed = message.embeds[0]
         else:
-            # Fallback if no embed is present
             expired_embed = discord.Embed(title="Interaction Expired", color=discord.Color.red())
 
-        # Set the footer to notify the user that the interaction has expired
         expired_embed.set_footer(text="This interaction has expired. Please type `!version` to use it again.")
-
-        # Edit the message to disable the components and show the expired message
-        await message.edit(embed=expired_embed, view=view)  # Use the original view with disabled components
+        await message.edit(embed=expired_embed, view=view)
