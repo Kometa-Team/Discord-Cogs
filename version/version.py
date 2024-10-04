@@ -70,6 +70,7 @@ class MyVersion(commands.Cog):
             # "Develop": "https://github.com/Kometa-Team/Overlay-Reset/commits/develop/VERSION",
             # "Nightly": "https://github.com/Kometa-Team/Overlay-Reset/commits/nightly/VERSION"
         }
+        mylogger.info(f"commit_info")
 
         # Fetch version and commit date for each project
         def get_versions_with_commit_dates(version_urls, commit_urls):
