@@ -117,9 +117,9 @@ class MyVersion(commands.Cog):
             )
 
             update_text = (
-                "`!updategit` if you are running Kometa locally (i.e. you cloned the repository using Git)\n\n"
-                "`!updatedocker` if you are running Kometa within Docker\n\n"
-                "`!updateunraid` if you are running Docker on Unraid"
+                "`!updategit` if you are running kometateam apps locally (i.e. you cloned the repository using Git)\n\n"
+                "`!updatedocker` if you are running kometateam apps within Docker\n\n"
+                "`!updateunraid` if you are running kometateam apps within Docker on Unraid"
             )
             embed.add_field(name="Commands", value=update_text, inline=False)
 
