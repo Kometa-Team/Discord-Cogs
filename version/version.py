@@ -61,6 +61,7 @@ class MyVersion(commands.Cog):
         }
 
         def get_versions_for_project(project_name, project_data):
+            """Fetches versions and commit dates for the project."""
             versions = {}
             repo_name = project_data['repo']
             branches = project_data['branches']
@@ -103,11 +104,14 @@ class MyVersion(commands.Cog):
             async def callback(self, interaction: discord.Interaction):
                 try:
                     embed = await build_update_instructions_embed(self.user)
+                    
+                    # Ensure interaction has not been acknowledged
                     if not interaction.response.is_done():
                         await interaction.response.edit_message(embed=embed, view=None)
                     else:
                         await interaction.followup.send(embed=embed, ephemeral=True)
                 except discord.errors.NotFound:
+                    mylogger.error("Interaction not found or expired")
                     await interaction.followup.send("This interaction has expired. Please use `!version` again.", ephemeral=True)
 
         class VersionSelect(discord.ui.Select):
@@ -126,11 +130,18 @@ class MyVersion(commands.Cog):
 
                 try:
                     embed = await build_version_embed(project_name, project_versions, user)
+
+                    # Log the response status
+                    mylogger.info(f"Response is_done: {interaction.response.is_done()}")
+
+                    # Ensure interaction is acknowledged once
                     if not interaction.response.is_done():
                         await interaction.response.edit_message(embed=embed, view=None)
                     else:
                         await interaction.followup.send(embed=embed, ephemeral=True)
+
                 except discord.errors.NotFound:
+                    mylogger.error("Interaction not found or expired")
                     await interaction.followup.send("This interaction has expired. Please use `!version` again.", ephemeral=True)
 
         class VersionView(discord.ui.View):
@@ -142,7 +153,7 @@ class MyVersion(commands.Cog):
         view = VersionView(ctx.author)
         message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=view)
 
-        await asyncio.sleep(180)
+        await asyncio.sleep(180)  # 3 minutes timeout
 
         for item in view.children:
             item.disabled = True
@@ -154,3 +165,4 @@ class MyVersion(commands.Cog):
 
         expired_embed.set_footer(text="This interaction has expired. Please type `!version` to use it again.")
         await message.edit(embed=expired_embed, view=view)
+
