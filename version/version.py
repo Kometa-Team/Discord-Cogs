@@ -1,124 +1,89 @@
+import os
 import discord
 import requests
 import logging
 import time  # To add throttling
 from discord.ext import commands
 from redbot.core import commands, app_commands
-from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 import asyncio  # To handle the timeout
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Get the GitHub token from the environment variable
+GITHUB_API_TOKEN = os.getenv("GITHUB_API_TOKEN")
 
 # Create logger
 mylogger = logging.getLogger('version')
 mylogger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
 
+# Headers for authenticated API requests
+headers = {
+    "Authorization": f"token {GITHUB_API_TOKEN}" if GITHUB_API_TOKEN else None
+}
+
 class MyVersion(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    def get_version_from_url(self, url):
-        # Transform GitHub URL to raw content URL
-        raw_url = url.replace('github.com', 'raw.githubusercontent.com').replace('blob/', '')
-
+    def get_commit_info_from_github_api(self, owner, repo, branch, path):
+        """Fetches the latest commit info from the GitHub API for a file in a specific branch."""
+        url = f"https://api.github.com/repos/{owner}/{repo}/commits"
+        params = {
+            "path": path,  # File path
+            "sha": branch  # Branch name
+        }
         try:
-            response = requests.get(raw_url)
+            response = requests.get(url, headers=headers, params=params)
             response.raise_for_status()
-            return response.text.strip()
+            data = response.json()
+
+            # Extract the latest commit date and message
+            latest_commit = data[0]
+            commit_date = latest_commit['commit']['committer']['date']
+            commit_message = latest_commit['commit']['message']
+            return commit_date, commit_message
+
         except requests.RequestException as e:
-            mylogger.error(f"Error fetching version from {url}: {e}")
-            return "Unknown"
-
-    def get_commit_date_from_commit_page(self, url):
-        """Scrapes the latest commit date from the commit history page on GitHub."""
-        try:
-            response = requests.get(url)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            # Look for the first commit in the list (most recent)
-            commit_info = soup.find("relative-time")
-            mylogger.info(f"commit_info: {commit_info}")
-            if commit_info:
-                commit_date = commit_info.get("datetime")
-                return commit_date
-
-            # If not found, log and return unknown
-            mylogger.warning(f"Commit date not found on page: {url}")
-            return "Unknown date"
-        except requests.RequestException as e:
-            mylogger.error(f"Error fetching commit date from {url}: {e}")
-            return "Unknown date"
+            mylogger.error(f"Error fetching commit info from {url}: {e}")
+            return "Unknown", "Unknown"
 
     @commands.command(name="version")
     @app_commands.describe(message_link="Fetch the current release versions of Kometa, ImageMaid, and Kometa Overlay Reset")
     @commands.cooldown(1, 60, commands.BucketType.user)  # 1 command per 60 seconds per user
     async def version(self, ctx: commands.Context):
-        # Define the GitHub page URLs for commits (not the raw URLs)
-        kometa_commit_urls = {
-            "Master": "https://github.com/Kometa-Team/Kometa/commits/master/VERSION",
-            "Develop": "https://github.com/Kometa-Team/Kometa/commits/develop/VERSION",
-            "Nightly": "https://github.com/Kometa-Team/Kometa/commits/nightly/VERSION"
-        }
-        
-        imagemaid_commit_urls = {
-            "Master": "https://github.com/Kometa-Team/ImageMaid/commits/master/VERSION",
-            "Develop": "https://github.com/Kometa-Team/ImageMaid/commits/develop/VERSION",
-            "Nightly": "https://github.com/Kometa-Team/ImageMaid/commits/nightly/VERSION"
-        }
-        
-        overlay_reset_commit_urls = {
-            "Master": "https://github.com/Kometa-Team/Overlay-Reset/commits/master/VERSION",
-            "Develop": "https://github.com/Kometa-Team/Overlay-Reset/commits/develop/VERSION",
-            "Nightly": "https://github.com/Kometa-Team/Overlay-Reset/commits/nightly/VERSION"
+        owner = "Kometa-Team"
+        repos = {
+            "Kometa": {"repo": "Kometa", "branches": ["master", "develop", "nightly"], "path": "VERSION"},
+            "ImageMaid": {"repo": "ImageMaid", "branches": ["master", "develop", "nightly"], "path": "VERSION"},
+            "Overlay Reset": {"repo": "Overlay-Reset", "branches": ["master", "develop", "nightly"], "path": "VERSION"}
         }
 
-        # Fetch version and commit date for each project
-        def get_versions_with_commit_dates(version_urls, commit_urls):
+        def get_versions_for_project(project_name, project_data):
+            """Fetches versions and commit dates for the project."""
             versions = {}
-            for name in version_urls.keys():
-                version = self.get_version_from_url(version_urls[name])  # Fetch the version content
-                commit_date = self.get_commit_date_from_commit_page(commit_urls[name])  # Fetch the latest commit date
-                versions[name] = (version, commit_date)
+            repo_name = project_data['repo']
+            branches = project_data['branches']
+            path = project_data['path']
 
-                # Add a delay between requests to avoid hitting rate limits
-                time.sleep(2)  # Sleep for 2 seconds between requests
+            for branch in branches:
+                commit_date, commit_message = self.get_commit_info_from_github_api(owner, repo_name, branch, path)
+                versions[branch] = (commit_message, commit_date)
+
+                # Throttle requests to avoid hitting API rate limits
+                time.sleep(2)
 
             return versions
 
-        # Define raw URLs for fetching the version content
-        kometa_version_urls = {
-            "Master": "https://github.com/Kometa-Team/Kometa/blob/master/VERSION",
-            "Develop": "https://github.com/Kometa-Team/Kometa/blob/develop/VERSION",
-            "Nightly": "https://github.com/Kometa-Team/Kometa/blob/nightly/VERSION"
-        }
-        
-        imagemaid_version_urls = {
-            "Master": "https://github.com/Kometa-Team/ImageMaid/blob/master/VERSION",
-            "Develop": "https://github.com/Kometa-Team/ImageMaid/blob/develop/VERSION",
-            "Nightly": "https://github.com/Kometa-Team/ImageMaid/blob/nightly/VERSION"
-        }
-        
-        overlay_reset_version_urls = {
-            "Master": "https://github.com/Kometa-Team/Overlay-Reset/blob/master/VERSION",
-            "Develop": "https://github.com/Kometa-Team/Overlay-Reset/blob/develop/VERSION",
-            "Nightly": "https://github.com/Kometa-Team/Overlay-Reset/blob/nightly/VERSION"
-        }
-
-        # Fetch versions and commit dates for all projects
-        kometa_versions = get_versions_with_commit_dates(kometa_version_urls, kometa_commit_urls)
-        imagemaid_versions = get_versions_with_commit_dates(imagemaid_version_urls, imagemaid_commit_urls)
-        overlay_reset_versions = get_versions_with_commit_dates(overlay_reset_version_urls, overlay_reset_commit_urls)
-
-        # Build the version information embed
         async def build_version_embed(project_name, versions, user):
-            embed = discord.Embed(
-                color=discord.Color.random()  # Random color
-            )
+            embed = discord.Embed(color=discord.Color.random())
 
             version_text = ""
             for name, (version, date) in versions.items():
                 if version != "Unknown":
-                    version_text += f"{name}: {version} (Updated: {date})\n"
-            
+                    version_text += f"{name.capitalize()}: {version} (Updated: {date})\n"
+
             # Only add the field if version_text is not empty
             if version_text:
                 embed.add_field(name=f"{project_name} Versions", value=version_text.strip(), inline=False)
@@ -129,19 +94,9 @@ class MyVersion(commands.Cog):
 
         # Build the update instructions embed
         async def build_update_instructions_embed(user):
-            embed = discord.Embed(
-                title="Update Instructions",
-                description=f"Here are the commands to use in our Discord server to get instructions:",
-                color=discord.Color.random()  # Random color
-            )
-
-            update_text = (
-                "`!updategit` if you are running Kometa locally (i.e. you cloned the repository using Git)\n\n"
-                "`!updatedocker` if you are running Kometa within Docker\n\n"
-                "`!updateunraid` if you are running Docker on Unraid"
-            )
+            embed = discord.Embed(title="Update Instructions", description=f"Here are the commands to use:", color=discord.Color.random())
+            update_text = "`!updategit` if you are running kometateam apps locally\n`!updatedocker` if using kometateam apps in Docker\n`!updateunraid` for kometateam apps in Unraid"
             embed.add_field(name="Commands", value=update_text, inline=False)
-
             return embed
 
         # Buttons for navigation
