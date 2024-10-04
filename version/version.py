@@ -1,6 +1,7 @@
 import discord
 import requests
 import logging
+import time  # To add throttling
 from discord.ext import commands
 from redbot.core import commands, app_commands
 from bs4 import BeautifulSoup
@@ -77,6 +78,10 @@ class MyVersion(commands.Cog):
                 version = self.get_version_from_url(version_urls[name])  # Fetch the version content
                 commit_date = self.get_commit_date_from_commit_page(commit_urls[name])  # Fetch the latest commit date
                 versions[name] = (version, commit_date)
+
+                # Add a delay between requests to avoid hitting rate limits
+                time.sleep(2)  # Sleep for 2 seconds between requests
+
             return versions
 
         # Define raw URLs for fetching the version content
