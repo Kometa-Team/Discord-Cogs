@@ -23,6 +23,9 @@ headers = {
     "Authorization": f"token {GITHUB_API_TOKEN}" if GITHUB_API_TOKEN else None
 }
 
+# Define the timeout duration
+TIMEOUT_SECONDS = 180  # 3 minutes
+
 class MyVersion(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -60,6 +63,12 @@ class MyVersion(commands.Cog):
             "Overlay Reset": {"repo": "Overlay-Reset", "branches": ["master", "develop", "nightly"], "path": "VERSION"}
         }
 
+        # Log the user invoking the command
+        mylogger.info(f"Version command invoked by {ctx.author} (ID: {ctx.author.id}) in {ctx.guild}/{ctx.channel}")
+
+        # Inform the user about the timeout duration
+        await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases. This interaction will expire in {TIMEOUT_SECONDS} seconds.")
+
         # Fetch version and commit date for each project
         def get_versions_for_project(project_name, project_data):
             """Fetches versions and commit dates for the project."""
@@ -75,7 +84,7 @@ class MyVersion(commands.Cog):
                 versions[branch] = (version, commit_date)
 
                 # Throttle requests to avoid hitting API rate limits
-                # time.sleep(2)  # Sleep for 2 seconds between requests
+                time.sleep(0)  # Sleep for x seconds between requests
 
             return versions
 
@@ -152,8 +161,8 @@ class MyVersion(commands.Cog):
         view = VersionView(ctx.author)  # Create the view to keep track of it
         message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=view)
 
-        # Wait for 3 minutes (180 seconds), then disable the buttons and dropdown
-        await asyncio.sleep(180)  # 3 minutes
+        # Wait for the defined timeout duration, then disable the buttons and dropdown
+        await asyncio.sleep(TIMEOUT_SECONDS)
         
         # Disable all components (buttons and dropdowns)
         for item in view.children:
@@ -167,7 +176,7 @@ class MyVersion(commands.Cog):
             expired_embed = discord.Embed(title="Interaction Expired", color=discord.Color.red())
 
         # Set the footer to notify the user that the interaction has expired
-        expired_embed.set_footer(text="This interaction has expired. Please type `!version` to use it again.")
+        expired_embed.set_footer(text=f"This interaction has expired. Please type `!version` to use it again.")
 
         # Edit the message to disable the components and show the expired message
         await message.edit(embed=expired_embed, view=view)  # Use the original view with disabled components
