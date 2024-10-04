@@ -33,10 +33,10 @@ class MyVersion(commands.Cog):
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Find the commit timestamp from the page
-            commit_time_tag = soup.find("relative-time")
-            if commit_time_tag:
-                commit_date = commit_time_tag['datetime']
+            # Locate the commit timestamp
+            commit_info = soup.find("div", class_="Box-header").find("relative-time")
+            if commit_info:
+                commit_date = commit_info.get("datetime")
                 return commit_date
             return "Unknown date"
         except requests.RequestException as e:
