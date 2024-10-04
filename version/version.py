@@ -109,15 +109,8 @@ class MyVersion(commands.Cog):
 
             async def callback(self, interaction: discord.Interaction):
                 # Build and send the update instructions embed when button is clicked
-                try:
-                    embed = await build_update_instructions_embed(self.user)
-                    if not interaction.response.is_done():
-                        await interaction.response.edit_message(embed=embed, view=None)  # Respond only once
-                    else:
-                        await interaction.followup.send(embed=embed, ephemeral=True)  # Handle already responded case
-                except discord.errors.NotFound:
-                    mylogger.error("Interaction not found or expired")
-                    await interaction.followup.send("This interaction has expired. Please use `!version` again.", ephemeral=True)
+                embed = await build_update_instructions_embed(self.user)
+                await interaction.response.edit_message(embed=embed, view=self.view)  # Keep the dropdown and button view active
 
         # Dropdown menu interaction
         class VersionSelect(discord.ui.Select):
@@ -164,18 +157,14 @@ class MyVersion(commands.Cog):
             item.disabled = True
 
         # Check if the message contains embeds before accessing it
-        try:
-            if message.embeds:
-                expired_embed = message.embeds[0]
-            else:
-                # Fallback if no embed is present
-                expired_embed = discord.Embed(title="Interaction Expired", color=discord.Color.red())
+        if message.embeds:
+            expired_embed = message.embeds[0]
+        else:
+            # Fallback if no embed is present
+            expired_embed = discord.Embed(title="Interaction Expired", color=discord.Color.red())
 
-            # Set the footer to notify the user that the interaction has expired
-            expired_embed.set_footer(text="This interaction has expired. Please type `!version` to use it again.")
+        # Set the footer to notify the user that the interaction has expired
+        expired_embed.set_footer(text="This interaction has expired. Please type `!version` to use it again.")
 
-            # Edit the message to disable the components and show the expired message
-            await message.edit(embed=expired_embed, view=view)  # Use the original view with disabled components
-
-        except discord.errors.NotFound:
-            mylogger.error("Message not found or interaction expired. Couldn't edit the original message.")
+        # Edit the message to disable the components and show the expired message
+        await message.edit(embed=expired_embed, view=view)  # Use the original view with disabled components
