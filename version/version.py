@@ -32,7 +32,6 @@ class MyVersion(commands.Cog):
             response = requests.get(url)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
-            mylogger.info(f"soup: {soup}")
 
             # Find the commit timestamp from the page
             commit_time_tag = soup.find("relative-time")
@@ -48,7 +47,7 @@ class MyVersion(commands.Cog):
     @app_commands.describe(message_link="Fetch the current release versions of Kometa, ImageMaid, and Kometa Overlay Reset")
     @commands.cooldown(1, 60, commands.BucketType.user)  # 1 command per 60 seconds per user
     async def version(self, ctx: commands.Context):
-        # URLs for each project
+        # Define the GitHub page URLs (not the raw URLs)
         kometa_urls = {
             "Master": "https://github.com/Kometa-Team/Kometa/blob/master/VERSION",
             "Develop": "https://github.com/Kometa-Team/Kometa/blob/develop/VERSION",
@@ -67,16 +66,16 @@ class MyVersion(commands.Cog):
             "Nightly": "https://github.com/Kometa-Team/Overlay-Reset/blob/nightly/VERSION"
         }
 
-        # Function to get versions for each project along with their commit date
+        # Fetch version and commit date for each project
         def get_versions_with_dates(urls):
             versions = {}
             for name, url in urls.items():
-                version = self.get_version_from_url(url)
-                commit_date = self.get_commit_date_from_url(url)
+                version = self.get_version_from_url(url)  # Fetch the version content
+                commit_date = self.get_commit_date_from_url(url)  # Fetch the last commit date
                 versions[name] = (version, commit_date)
             return versions
 
-        # Fetch versions and commit dates
+        # Fetch versions and commit dates for all projects
         kometa_versions = get_versions_with_dates(kometa_urls)
         imagemaid_versions = get_versions_with_dates(imagemaid_urls)
         overlay_reset_versions = get_versions_with_dates(overlay_reset_urls)
@@ -163,7 +162,7 @@ class MyVersion(commands.Cog):
         message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=view)
 
         # Wait for 3 minutes (180 seconds), then disable the buttons and dropdown
-        await asyncio.sleep(180)  # 10 minutes
+        await asyncio.sleep(180)  # 3 minutes
         
         # Disable all components (buttons and dropdowns)
         for item in view.children:
