@@ -73,7 +73,7 @@ class MyVersion(commands.Cog):
                 versions[branch] = (commit_message, commit_date)
 
                 # Throttle requests to avoid hitting API rate limits
-                time.sleep(2)  # Sleep for 2 seconds between requests
+                # time.sleep(2)  # Sleep for 2 seconds between requests
 
             return versions
 
@@ -84,7 +84,7 @@ class MyVersion(commands.Cog):
             version_text = ""
             for name, (version, date) in versions.items():
                 if version != "Unknown":
-                    version_text += f"{name.capitalize()}: {version} (Updated: {date})\n"
+                    version_text += f"{version} (Updated: {date})\n"
 
             # Only add the field if version_text is not empty
             if version_text:
