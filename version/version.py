@@ -84,7 +84,7 @@ class MyVersion(commands.Cog):
             version_text = ""
             for name, (version, date) in versions.items():
                 if version != "Unknown":
-                    version_text += f"{version} (Updated: {date})\n"
+                    version_text += f"{name.capitalize()}: {version} (Updated: {date})\n"
 
             # Only add the field if version_text is not empty
             if version_text:
