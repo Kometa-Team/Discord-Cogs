@@ -3,6 +3,7 @@ import requests
 import logging
 from discord.ext import commands
 from redbot.core import commands, app_commands
+from bs4 import BeautifulSoup
 import asyncio  # To handle the timeout
 
 # Create logger
@@ -24,6 +25,23 @@ class MyVersion(commands.Cog):
         except requests.RequestException as e:
             mylogger.error(f"Error fetching version from {url}: {e}")
             return "Unknown"
+
+    def get_commit_date_from_url(self, url):
+        """Scrapes the last commit date for the VERSION file from the GitHub HTML page."""
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Find the commit timestamp from the page
+            commit_time_tag = soup.find("relative-time")
+            if commit_time_tag:
+                commit_date = commit_time_tag['datetime']
+                return commit_date
+            return "Unknown date"
+        except requests.RequestException as e:
+            mylogger.error(f"Error fetching commit date from {url}: {e}")
+            return "Unknown date"
 
     @commands.command(name="version")
     @app_commands.describe(message_link="Fetch the current release versions of Kometa, ImageMaid, and Kometa Overlay Reset")
@@ -48,13 +66,19 @@ class MyVersion(commands.Cog):
             "Nightly": "https://github.com/Kometa-Team/Overlay-Reset/blob/nightly/VERSION"
         }
 
-        # Function to get versions for each project
-        def get_versions(urls):
-            return {name: self.get_version_from_url(url) for name, url in urls.items()}
+        # Function to get versions for each project along with their commit date
+        def get_versions_with_dates(urls):
+            versions = {}
+            for name, url in urls.items():
+                version = self.get_version_from_url(url)
+                commit_date = self.get_commit_date_from_url(url)
+                versions[name] = (version, commit_date)
+            return versions
 
-        kometa_versions = get_versions(kometa_urls)
-        imagemaid_versions = get_versions(imagemaid_urls)
-        overlay_reset_versions = get_versions(overlay_reset_urls)
+        # Fetch versions and commit dates
+        kometa_versions = get_versions_with_dates(kometa_urls)
+        imagemaid_versions = get_versions_with_dates(imagemaid_urls)
+        overlay_reset_versions = get_versions_with_dates(overlay_reset_urls)
 
         # Build the version information embed
         async def build_version_embed(project_name, versions, user):
@@ -63,17 +87,13 @@ class MyVersion(commands.Cog):
             )
 
             version_text = ""
-            if versions["Master"] != "Unknown":
-                version_text += f"Master: {versions['Master']}\n"
-            if versions["Develop"] != "Unknown":
-                version_text += f"Develop: {versions['Develop']}\n"
-            if versions["Nightly"] != "Unknown":
-                version_text += f"Nightly: {versions['Nightly']}\n"
+            for name, (version, date) in versions.items():
+                if version != "Unknown":
+                    version_text += f"{name}: {version} (Updated: {date})\n"
             
             # Only add the field if version_text is not empty
             if version_text:
-                version_text = version_text.strip() + "\n"
-                embed.add_field(name=f"{project_name} Versions", value=version_text, inline=False)
+                embed.add_field(name=f"{project_name} Versions", value=version_text.strip(), inline=False)
 
             # Mention the user that the update instructions are on a separate page
             embed.set_footer(text="Click the button below to see update instructions.")
@@ -141,8 +161,8 @@ class MyVersion(commands.Cog):
         view = VersionView(ctx.author)  # Create the view to keep track of it
         message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=view)
 
-        # Wait for 3 minutes (180 seconds), then disable the buttons and dropdown
-        await asyncio.sleep(180)  # 3 minutes
+        # Wait for 10 minutes (600 seconds), then disable the buttons and dropdown
+        await asyncio.sleep(600)  # 10 minutes
         
         # Disable all components (buttons and dropdowns)
         for item in view.children:
