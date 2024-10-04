@@ -81,7 +81,7 @@ class MyVersion(commands.Cog):
                 versions[name] = (version, commit_date)
 
                 # Add a delay between requests to avoid hitting rate limits
-                time.sleep(2)  # Sleep for 2 seconds between requests
+                time.sleep(5)  # Sleep for 2 seconds between requests
 
             return versions
 
