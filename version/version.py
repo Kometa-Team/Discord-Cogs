@@ -35,6 +35,7 @@ class MyVersion(commands.Cog):
 
             # Look for the first commit in the list (most recent)
             commit_info = soup.find("relative-time")
+            mylogger.info(f"commit_info: {commit_info}")
             if commit_info:
                 commit_date = commit_info.get("datetime")
                 return commit_date
