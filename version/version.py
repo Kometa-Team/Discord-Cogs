@@ -158,11 +158,14 @@ class MyVersion(commands.Cog):
         for item in view.children:
             item.disabled = True
 
-        if message.embeds:
-            expired_embed = message.embeds[0]
-        else:
-            expired_embed = discord.Embed(title="Interaction Expired", color=discord.Color.red())
+        try:
+            if message.embeds:
+                expired_embed = message.embeds[0]
+            else:
+                expired_embed = discord.Embed(title="Interaction Expired", color=discord.Color.red())
 
-        expired_embed.set_footer(text="This interaction has expired. Please type `!version` to use it again.")
-        await message.edit(embed=expired_embed, view=view)
+            expired_embed.set_footer(text="This interaction has expired. Please type `!version` to use it again.")
+            await message.edit(embed=expired_embed, view=view)
 
+        except discord.errors.NotFound:
+            mylogger.error("Message not found or interaction expired. Couldn't edit the original message.")
