@@ -60,6 +60,7 @@ class MyVersion(commands.Cog):
             "Overlay Reset": {"repo": "Overlay-Reset", "branches": ["master", "develop", "nightly"], "path": "VERSION"}
         }
 
+        # Fetch version and commit date for each project
         def get_versions_for_project(project_name, project_data):
             """Fetches versions and commit dates for the project."""
             versions = {}
@@ -72,7 +73,7 @@ class MyVersion(commands.Cog):
                 versions[branch] = (commit_message, commit_date)
 
                 # Throttle requests to avoid hitting API rate limits
-                time.sleep(2)
+                time.sleep(2)  # Sleep for 2 seconds between requests
 
             return versions
 
@@ -122,16 +123,24 @@ class MyVersion(commands.Cog):
 
             async def callback(self, interaction: discord.Interaction):
                 project_name = self.values[0]
-                user = interaction.user  # Get the user who made the interaction
-                if project_name == "Kometa":
-                    embed = await build_version_embed("Kometa", kometa_versions, user)
-                elif project_name == "ImageMaid":
-                    embed = await build_version_embed("ImageMaid", imagemaid_versions, user)
-                else:
-                    embed = await build_version_embed("Kometa Overlay Reset", overlay_reset_versions, user)
+                user = interaction.user
+                project_versions = get_versions_for_project(project_name, repos[project_name])
 
-                # Show the version info with a button to view update instructions
-                await interaction.response.edit_message(embed=embed, view=self.view)  # Keep dropdown and button view active
+                try:
+                    embed = await build_version_embed(project_name, project_versions, user)
+
+                    # Log the response status
+                    mylogger.info(f"Response is_done: {interaction.response.is_done()}")
+
+                    # Ensure interaction is acknowledged once
+                    if not interaction.response.is_done():
+                        await interaction.response.edit_message(embed=embed, view=None)
+                    else:
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+
+                except discord.errors.NotFound:
+                    mylogger.error("Interaction not found or expired")
+                    await interaction.followup.send("This interaction has expired. Please use `!version` again.", ephemeral=True)
 
         # View to handle the dropdown menu and button
         class VersionView(discord.ui.View):
