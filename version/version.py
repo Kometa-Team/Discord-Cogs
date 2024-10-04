@@ -132,17 +132,18 @@ class MyVersion(commands.Cog):
             async def callback(self, interaction: discord.Interaction):
                 project_name = self.values[0]
                 user = interaction.user  # Get the user who made the interaction
-                project_versions = get_versions_for_project(project_name, repos[project_name])
 
-                # Defer the response to acknowledge the interaction and give more processing time
+                # Defer the response to give the bot more time to process the data
                 await interaction.response.defer()
 
-                try:
-                    embed = await build_version_embed(project_name, project_versions, user)
-                    await interaction.edit_original_response(embed=embed, view=self.view)  # Keep dropdown and button view active
-                except discord.errors.NotFound:
-                    mylogger.error("Interaction not found or expired")
-                    await interaction.followup.send("This interaction has expired. Please use `!version` again.", ephemeral=True)
+                # Fetch versions for the selected project
+                project_versions = await asyncio.to_thread(get_versions_for_project, project_name, repos[project_name])
+
+                # Build the embed with the fetched version info
+                embed = await build_version_embed(project_name, project_versions, user)
+
+                # After fetching the data, edit the original deferred message with the new embed
+                await interaction.followup.edit_message(interaction.message.id, embed=embed, view=self.view)
 
         # View to handle the dropdown menu and button
         class VersionView(discord.ui.View):
@@ -157,7 +158,7 @@ class MyVersion(commands.Cog):
 
         # Wait for 3 minutes (180 seconds), then disable the buttons and dropdown
         await asyncio.sleep(180)  # 3 minutes
-
+        
         # Disable all components (buttons and dropdowns)
         for item in view.children:
             item.disabled = True
@@ -178,4 +179,3 @@ class MyVersion(commands.Cog):
 
         except discord.errors.NotFound:
             mylogger.error("Message not found or interaction expired. Couldn't edit the original message.")
-
