@@ -32,6 +32,7 @@ class MyVersion(commands.Cog):
             response = requests.get(url)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
+            mylogger.info(f"soup: {soup}")
 
             # Find the commit timestamp from the page
             commit_time_tag = soup.find("relative-time")
@@ -161,8 +162,8 @@ class MyVersion(commands.Cog):
         view = VersionView(ctx.author)  # Create the view to keep track of it
         message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=view)
 
-        # Wait for 10 minutes (600 seconds), then disable the buttons and dropdown
-        await asyncio.sleep(600)  # 10 minutes
+        # Wait for 3 minutes (180 seconds), then disable the buttons and dropdown
+        await asyncio.sleep(180)  # 10 minutes
         
         # Disable all components (buttons and dropdowns)
         for item in view.children:
