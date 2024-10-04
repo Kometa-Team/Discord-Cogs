@@ -66,9 +66,6 @@ class MyVersion(commands.Cog):
         # Log the user invoking the command
         mylogger.info(f"Version command invoked by {ctx.author} (ID: {ctx.author.id}) in {ctx.guild}/{ctx.channel}")
 
-        # Inform the user about the timeout duration
-        await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases. This interaction will expire in {TIMEOUT_SECONDS} seconds.")
-
         # Fetch version and commit date for each project
         def get_versions_for_project(project_name, project_data):
             """Fetches versions and commit dates for the project."""
@@ -159,7 +156,7 @@ class MyVersion(commands.Cog):
 
         # Send the initial message with the dropdown and button
         view = VersionView(ctx.author)  # Create the view to keep track of it
-        message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases:", view=view)
+        message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases. This interaction will expire in {TIMEOUT_SECONDS} seconds.", view=view)
 
         # Wait for the defined timeout duration, then disable the buttons and dropdown
         await asyncio.sleep(TIMEOUT_SECONDS)
