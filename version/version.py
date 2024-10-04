@@ -26,18 +26,21 @@ class MyVersion(commands.Cog):
             mylogger.error(f"Error fetching version from {url}: {e}")
             return "Unknown"
 
-    def get_commit_date_from_url(self, url):
-        """Scrapes the last commit date for the VERSION file from the GitHub HTML page."""
+    def get_commit_date_from_commit_page(self, url):
+        """Scrapes the latest commit date from the commit history page on GitHub."""
         try:
             response = requests.get(url)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Locate the commit timestamp
-            commit_info = soup.find("div", class_="Box-header").find("relative-time")
+            # Look for the first commit in the list (most recent)
+            commit_info = soup.find("relative-time")
             if commit_info:
                 commit_date = commit_info.get("datetime")
                 return commit_date
+
+            # If not found, log and return unknown
+            mylogger.warning(f"Commit date not found on page: {url}")
             return "Unknown date"
         except requests.RequestException as e:
             mylogger.error(f"Error fetching commit date from {url}: {e}")
@@ -47,38 +50,57 @@ class MyVersion(commands.Cog):
     @app_commands.describe(message_link="Fetch the current release versions of Kometa, ImageMaid, and Kometa Overlay Reset")
     @commands.cooldown(1, 60, commands.BucketType.user)  # 1 command per 60 seconds per user
     async def version(self, ctx: commands.Context):
-        # Define the GitHub page URLs (not the raw URLs)
-        kometa_urls = {
+        # Define the GitHub page URLs for commits (not the raw URLs)
+        kometa_commit_urls = {
+            "Master": "https://github.com/Kometa-Team/Kometa/commits/master/VERSION",
+            "Develop": "https://github.com/Kometa-Team/Kometa/commits/develop/VERSION",
+            "Nightly": "https://github.com/Kometa-Team/Kometa/commits/nightly/VERSION"
+        }
+        
+        imagemaid_commit_urls = {
+            "Master": "https://github.com/Kometa-Team/ImageMaid/commits/master/VERSION",
+            "Develop": "https://github.com/Kometa-Team/ImageMaid/commits/develop/VERSION",
+            "Nightly": "https://github.com/Kometa-Team/ImageMaid/commits/nightly/VERSION"
+        }
+        
+        overlay_reset_commit_urls = {
+            "Master": "https://github.com/Kometa-Team/Overlay-Reset/commits/master/VERSION",
+            "Develop": "https://github.com/Kometa-Team/Overlay-Reset/commits/develop/VERSION",
+            "Nightly": "https://github.com/Kometa-Team/Overlay-Reset/commits/nightly/VERSION"
+        }
+
+        # Fetch version and commit date for each project
+        def get_versions_with_commit_dates(version_urls, commit_urls):
+            versions = {}
+            for name in version_urls.keys():
+                version = self.get_version_from_url(version_urls[name])  # Fetch the version content
+                commit_date = self.get_commit_date_from_commit_page(commit_urls[name])  # Fetch the latest commit date
+                versions[name] = (version, commit_date)
+            return versions
+
+        # Define raw URLs for fetching the version content
+        kometa_version_urls = {
             "Master": "https://github.com/Kometa-Team/Kometa/blob/master/VERSION",
             "Develop": "https://github.com/Kometa-Team/Kometa/blob/develop/VERSION",
             "Nightly": "https://github.com/Kometa-Team/Kometa/blob/nightly/VERSION"
         }
         
-        imagemaid_urls = {
+        imagemaid_version_urls = {
             "Master": "https://github.com/Kometa-Team/ImageMaid/blob/master/VERSION",
             "Develop": "https://github.com/Kometa-Team/ImageMaid/blob/develop/VERSION",
             "Nightly": "https://github.com/Kometa-Team/ImageMaid/blob/nightly/VERSION"
         }
         
-        overlay_reset_urls = {
+        overlay_reset_version_urls = {
             "Master": "https://github.com/Kometa-Team/Overlay-Reset/blob/master/VERSION",
             "Develop": "https://github.com/Kometa-Team/Overlay-Reset/blob/develop/VERSION",
             "Nightly": "https://github.com/Kometa-Team/Overlay-Reset/blob/nightly/VERSION"
         }
 
-        # Fetch version and commit date for each project
-        def get_versions_with_dates(urls):
-            versions = {}
-            for name, url in urls.items():
-                version = self.get_version_from_url(url)  # Fetch the version content
-                commit_date = self.get_commit_date_from_url(url)  # Fetch the last commit date
-                versions[name] = (version, commit_date)
-            return versions
-
         # Fetch versions and commit dates for all projects
-        kometa_versions = get_versions_with_dates(kometa_urls)
-        imagemaid_versions = get_versions_with_dates(imagemaid_urls)
-        overlay_reset_versions = get_versions_with_dates(overlay_reset_urls)
+        kometa_versions = get_versions_with_commit_dates(kometa_version_urls, kometa_commit_urls)
+        imagemaid_versions = get_versions_with_commit_dates(imagemaid_version_urls, imagemaid_commit_urls)
+        overlay_reset_versions = get_versions_with_commit_dates(overlay_reset_version_urls, overlay_reset_commit_urls)
 
         # Build the version information embed
         async def build_version_embed(project_name, versions, user):
