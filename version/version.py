@@ -106,8 +106,8 @@ class MyVersion(commands.Cog):
 
         # Fetch versions and commit dates for all projects
         kometa_versions = get_versions_with_commit_dates(kometa_version_urls, kometa_commit_urls)
-        imagemaid_versions = get_versions_with_commit_dates(imagemaid_version_urls, imagemaid_commit_urls)
-        overlay_reset_versions = get_versions_with_commit_dates(overlay_reset_version_urls, overlay_reset_commit_urls)
+        # imagemaid_versions = get_versions_with_commit_dates(imagemaid_version_urls, imagemaid_commit_urls)
+        # overlay_reset_versions = get_versions_with_commit_dates(overlay_reset_version_urls, overlay_reset_commit_urls)
 
         # Build the version information embed
         async def build_version_embed(project_name, versions, user):
