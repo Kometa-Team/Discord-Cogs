@@ -70,7 +70,9 @@ class MyVersion(commands.Cog):
 
             for branch in branches:
                 commit_date, commit_message = self.get_commit_info_from_github_api(owner, repo_name, branch, path)
-                versions[branch] = (commit_message, commit_date)
+                # Shorten commit message to just the version (assuming format: "Kometa Release X.X.X")
+                version = commit_message.split()[-1] if commit_message != "Unknown" else "Unknown"
+                versions[branch] = (version, commit_date)
 
                 # Throttle requests to avoid hitting API rate limits
                 # time.sleep(2)  # Sleep for 2 seconds between requests
@@ -82,9 +84,10 @@ class MyVersion(commands.Cog):
             embed = discord.Embed(color=discord.Color.random())
 
             version_text = ""
-            for name, (version, date) in versions.items():
+            for branch, (version, date) in versions.items():
                 if version != "Unknown":
-                    version_text += f"{name.capitalize()}: {version} (Updated: {date})\n"
+                    # Simpler format as requested
+                    version_text += f"{branch.capitalize()}: {version} (Updated: {date})\n"
 
             # Only add the field if version_text is not empty
             if version_text:
