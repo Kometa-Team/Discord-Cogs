@@ -64,7 +64,7 @@ class MyVersion(commands.Cog):
             dt_obj = datetime.strptime(iso_date, '%Y-%m-%dT%H:%M:%SZ')
 
             # Format it into a more readable form, e.g., 'September 30, 2024 at 4:42 PM UTC'
-            formatted_date = dt_obj.strftime('%B %d, %Y at %I:%M %p UTC')
+            formatted_date = dt_obj.strftime('%Y-%m-%d at %I:%M%p UTC')
             return formatted_date
         except ValueError:
             return iso_date  # In case of formatting errors, return the original string
