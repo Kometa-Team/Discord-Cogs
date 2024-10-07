@@ -7,6 +7,7 @@ from discord.ext import commands
 from redbot.core import commands, app_commands
 from dotenv import load_dotenv
 import asyncio  # To handle the timeout
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -25,6 +26,7 @@ headers = {
 
 # Define the timeout duration
 TIMEOUT_SECONDS = 180  # 3 minutes
+API_THROTTLE_SECONDS = 0  # 0 seconds between API requests
 
 class MyVersion(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -46,11 +48,26 @@ class MyVersion(commands.Cog):
             latest_commit = data[0]
             commit_date = latest_commit['commit']['committer']['date']
             commit_message = latest_commit['commit']['message']
+
+            # Format the commit date into a more human-readable form
+            commit_date = self.format_date(commit_date)
             return commit_date, commit_message
 
         except requests.RequestException as e:
             mylogger.error(f"Error fetching commit info from {url}: {e}")
             return "Unknown", "Unknown"
+
+    def format_date(self, iso_date):
+        """Converts an ISO 8601 date into a readable format."""
+        try:
+            # Convert the ISO 8601 string to a datetime object
+            dt_obj = datetime.strptime(iso_date, '%Y-%m-%dT%H:%M:%SZ')
+
+            # Format it into a more readable form, e.g., 'September 30, 2024 at 4:42 PM UTC'
+            formatted_date = dt_obj.strftime('%B %d, %Y at %I:%M %p UTC')
+            return formatted_date
+        except ValueError:
+            return iso_date  # In case of formatting errors, return the original string
 
     @commands.command(name="version")
     @app_commands.describe(message_link="Fetch the current release versions of Kometa, ImageMaid, and Kometa Overlay Reset")
@@ -81,7 +98,7 @@ class MyVersion(commands.Cog):
                 versions[branch] = (version, commit_date)
 
                 # Throttle requests to avoid hitting API rate limits
-                time.sleep(0)  # Sleep for x seconds between requests
+                time.sleep(API_THROTTLE_SECONDS)  # Sleep for API_THROTTLE_SECONDS seconds between requests
 
             return versions
 
