@@ -110,7 +110,7 @@ class MyVersion(commands.Cog):
             for branch, (version, date) in versions.items():
                 if version != "Unknown":
                     # Simpler format as requested
-                    version_text += f"{branch.capitalize()}: {version} (Updated: {date})\n"
+                    version_text += f"{branch.capitalize()}: {version} (Released: {date})\n"
 
             # Only add the field if version_text is not empty
             if version_text:
