@@ -26,7 +26,7 @@ headers = {
 
 # Define the timeout duration
 TIMEOUT_SECONDS = 180  # 3 minutes
-API_THROTTLE_SECONDS = 2  # Throttle between API requests
+API_THROTTLE_SECONDS = 0  # Throttle between API requests
 
 class MyVersion(commands.Cog):
     def __init__(self, bot: commands.Bot):
