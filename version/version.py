@@ -26,11 +26,21 @@ headers = {
 
 # Define the timeout duration
 TIMEOUT_SECONDS = 180  # 3 minutes
-API_THROTTLE_SECONDS = 0  # 0 seconds between API requests
+API_THROTTLE_SECONDS = 2  # Throttle between API requests
 
 class MyVersion(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    def get_version_from_url(self, raw_url):
+        """Fetches the version content from the raw GitHub file URL."""
+        try:
+            response = requests.get(raw_url)
+            response.raise_for_status()
+            return response.text.strip()
+        except requests.RequestException as e:
+            mylogger.error(f"Error fetching version from {raw_url}: {e}")
+            return "Unknown"
 
     def get_commit_info_from_github_api(self, owner, repo, branch, path):
         """Fetches the latest commit info from the GitHub API for a file in a specific branch."""
@@ -47,15 +57,14 @@ class MyVersion(commands.Cog):
             # Extract the latest commit date and message
             latest_commit = data[0]
             commit_date = latest_commit['commit']['committer']['date']
-            commit_message = latest_commit['commit']['message']
 
             # Format the commit date into a more human-readable form
             commit_date = self.format_date(commit_date)
-            return commit_date, commit_message
+            return commit_date
 
         except requests.RequestException as e:
             mylogger.error(f"Error fetching commit info from {url}: {e}")
-            return "Unknown", "Unknown"
+            return "Unknown"
 
     def format_date(self, iso_date):
         """Converts an ISO 8601 date into a readable format."""
@@ -92,13 +101,15 @@ class MyVersion(commands.Cog):
             path = project_data['path']
 
             for branch in branches:
-                commit_date, commit_message = self.get_commit_info_from_github_api(owner, repo_name, branch, path)
-                # Shorten commit message to just the version (assuming format: "Kometa Release X.X.X")
-                version = commit_message.split()[-1] if commit_message != "Unknown" else "Unknown"
+                raw_url = f"https://raw.githubusercontent.com/{owner}/{repo_name}/{branch}/{path}"
+                version = self.get_version_from_url(raw_url)
+                commit_date = self.get_commit_info_from_github_api(owner, repo_name, branch, path)
+
+                # Store the version and commit date
                 versions[branch] = (version, commit_date)
 
                 # Throttle requests to avoid hitting API rate limits
-                time.sleep(API_THROTTLE_SECONDS)  # Sleep for API_THROTTLE_SECONDS seconds between requests
+                time.sleep(API_THROTTLE_SECONDS)
 
             return versions
 
