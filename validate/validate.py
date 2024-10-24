@@ -56,7 +56,7 @@ class RedBotCogValidate(commands.Cog):
         try:
             yaml.safe_load(code_block)
             mylogger.info("YAML is valid")
-            await self.send_validation_message(channel, code_block, is_valid=True)
+            # await self.send_validation_message(channel, code_block, is_valid=True)
         except yaml.YAMLError as exc:
             mylogger.info("YAML is NOT valid")
             error_message = f"Error message:\n\n{str(exc)}"
