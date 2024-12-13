@@ -772,7 +772,7 @@ class RedBotCogLogscan(commands.Cog):
                 mdblist_attr_errors.append(idx)
             elif "MdbList Error: Invalid API key" in line:
                 mdblist_errors.append(idx)
-            elif "MdbList Error: API Limit Reached" in line:  # or "MdbList Error: API Rate Limit Reached" in line:
+            elif "MDBList Error: API Limit Reached" in line or "MDBList Error: API Rate Limit Reached" in line:
                 mdblist_api_limit_errors.append(idx)
             elif "metadata attribute is required" in line:
                 metadata_attribute_errors.append(idx)
