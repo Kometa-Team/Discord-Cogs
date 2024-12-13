@@ -1768,7 +1768,7 @@ class RedBotCogLogscan(commands.Cog):
         if total_lines > 1:  # Ensure there are at least 2 lines to process
             extracted_lines = extracted_lines[:-1]
 
-        mylogger.info(f"extracted_lines: {extracted_lines}")
+        mylogger.info(f"*******extracted_lines**********: {extracted_lines}")
         return extracted_lines
 
     def clean_extracted_content(self, content):
