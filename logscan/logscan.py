@@ -1748,12 +1748,15 @@ class RedBotCogLogscan(commands.Cog):
             if extraction_started:
                 # Config Warning at the start of the line means we're done
                 if "| Config Warning: " in line:
+                    mylogger.info(f"****break on config warning")
                     break
                 # Check for the global divider condition
                 if line.count(global_divider) >= 10:
+                    mylogger.info(f"****break on global divider")
                     break
                 # Check for "Initializing cache database at" condition
                 if "Initializing cache database at" in line:
+                    mylogger.info(f"****break on cache database")
                     break
 
                 extracted_lines.append(line)
