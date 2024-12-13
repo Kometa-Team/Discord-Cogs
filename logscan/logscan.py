@@ -1747,7 +1747,7 @@ class RedBotCogLogscan(commands.Cog):
                 continue
             if extraction_started:
                 # Config Warning at the start of the line means we're done
-                if "| Config Warning: " in line:
+                if "Config Warning: " in line:
                     mylogger.info(f"****break on config warning")
                     break
                 # Check for the global divider condition
