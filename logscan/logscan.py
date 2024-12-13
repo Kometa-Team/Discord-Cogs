@@ -668,6 +668,7 @@ class RedBotCogLogscan(commands.Cog):
         mass_update_errors = []
         mdblist_attr_errors = []
         mdblist_errors = []
+        mdblist_api_limit_errors = []
         metadata_attribute_errors = []
         metadata_load_errors = []
         missing_path_errors = []
@@ -771,6 +772,8 @@ class RedBotCogLogscan(commands.Cog):
                 mdblist_attr_errors.append(idx)
             elif "MdbList Error: Invalid API key" in line:
                 mdblist_errors.append(idx)
+            elif "MdbList Error: API Limit Reached" in line or "MdbList Error: API Rate Limit Reached" in line:
+                mdblist_api_limit_errors.append(idx)
             elif "metadata attribute is required" in line:
                 metadata_attribute_errors.append(idx)
             elif "Metadata File Failed To Load" in line:
@@ -1138,6 +1141,18 @@ class RedBotCogLogscan(commands.Cog):
                     f"{len(mdblist_errors)} line(s) with MDBLIST errors. Line number(s): {formatted_errors}"
             )
             special_check_lines.append(mdblist_error_message)
+
+        if mdblist_api_limit_errors:
+            url_line = "[https://kometa.wiki/en/latest/config/mdblist/?h=mdblist+attributes#mdblist-attributes]"
+            formatted_errors = self.format_contiguous_lines(mdblist_api_limit_errors)
+            mdblist_api_limit_error_message = (
+                    f"❌ **MDBLIST API LIMIT ERROR**\n"
+                    f"You have hit the MDBLIST API LIMIT. The free apikey is limited to 1000 requests per day so if you hit your limit Kometa should be able to pick up where it left off the next day as long as the Kometa cache setting is enabled in yur config.yml file.\n"
+                    f"This will cause any metadata updates that rely on MdbList to fail until the limit is reset (usually daily).\n"
+                    f"For more information on configuring MdbList, {url_line}\n"
+                    f"{len(mdblist_api_limit_errors)} line(s) with MDBLIST API Limit errors. Line number(s): {formatted_errors}"
+            )
+            special_check_lines.append(mdblist_api_limit_error_message)
 
         if metadata_attribute_errors:
             url_line = "[https://kometa.wiki/en/latest/config/files/#example]"
