@@ -737,12 +737,6 @@ class RedBotCogLogscan(commands.Cog):
                 convert_errors.append(idx)
             elif "PIL.UnidentifiedImageError: cannot" in line:
                 corrupt_image_errors.append(idx)
-            elif "[CRITICAL]" in line:
-                critical_errors.append(idx)
-            elif "[ERROR]" in line:
-                error_errors.append(idx)
-            elif "[WARNING]" in line:
-                warning_errors.append(idx)
             elif "checkFiles=1" in line:
                 checkFiles.append(idx)
             elif "current_year" in line:
@@ -829,6 +823,12 @@ class RedBotCogLogscan(commands.Cog):
                 to_be_configured_errors.append(idx)
             elif "Trakt Connection Failed" in line:
                 trakt_connection_errors.append(idx)
+            elif "[CRITICAL]" in line:
+                critical_errors.append(idx)
+            elif "[ERROR]" in line:
+                error_errors.append(idx)
+            elif "[WARNING]" in line:
+                warning_errors.append(idx)
 
         if anidb69_errors:
             url_line = "[https://kometa.wiki/en/latest/config/anidb]"
