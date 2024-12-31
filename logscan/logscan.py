@@ -676,6 +676,7 @@ class RedBotCogLogscan(commands.Cog):
         new_plexapi_version_found_errors = []
         no_items_found_errors = []
         omdb_errors = []
+        omdb_api_limit_errors = []
         overlays_bloat = []
         overlay_font_missing = []
         overlay_apply_errors = []
@@ -790,6 +791,8 @@ class RedBotCogLogscan(commands.Cog):
                 new_plexapi_version_found_errors.append(idx)
             elif "OMDb Error: Invalid API key" in line:
                 omdb_errors.append(idx)
+            elif "OMDb Error: Request limit reached!" in line:
+                omdb_api_limit_errors.append(idx)
             elif "Overlay Error: Poster already has an Overlay" in line:
                 overlay_apply_errors.append(idx)
             elif "| Overlay Error: Overlay Image not found" in line:
@@ -1281,6 +1284,18 @@ class RedBotCogLogscan(commands.Cog):
                     f"{len(omdb_errors)} line(s) with OMDb errors. Line number(s): {formatted_errors}"
             )
             special_check_lines.append(omdb_error_message)
+
+        if omdb_api_limit_errors:
+            url_line = "[https://kometa.wiki/en/latest/config/omdb/?h=omdb#omdb-attributes]"
+            formatted_errors = self.format_contiguous_lines(omdb_api_limit_errors)
+            omdb_api_limit_error_message = (
+                    f"❌ **OMDB API LIMIT ERROR**\n"
+                    f"You have hit the OMDB API LIMIT. The free apikey is limited to 1000 requests per day so if you hit your limit Kometa should be able to pick up where it left off the next day as long as the Kometa cache setting is enabled in yur config.yml file.\n"
+                    f"This will cause any metadata updates that rely on OMDB to fail until the limit is reset (usually daily).\n"
+                    f"For more information on configuring OMDB, {url_line}\n"
+                    f"{len(omdb_api_limit_errors)} line(s) with OMDB API Limit errors. Line number(s): {formatted_errors}"
+            )
+            special_check_lines.append(omdb_api_limit_error_message)
 
         if overlay_font_missing:
             url_line = "[https://kometa.wiki/en/latest/showcase/overlays/?h=font#example-2]"
