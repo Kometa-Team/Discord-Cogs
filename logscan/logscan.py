@@ -791,7 +791,7 @@ class RedBotCogLogscan(commands.Cog):
                 new_plexapi_version_found_errors.append(idx)
             elif "OMDb Error: Invalid API key" in line:
                 omdb_errors.append(idx)
-            elif "OMDb Error: Request limit reached!" in line:
+            elif "OMDb Error: Request limit reached" in line:
                 omdb_api_limit_errors.append(idx)
             elif "Overlay Error: Poster already has an Overlay" in line:
                 overlay_apply_errors.append(idx)
