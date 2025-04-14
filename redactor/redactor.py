@@ -34,8 +34,16 @@ class RedBotCog(commands.Cog):
                 mylogger.info(f"Message {message.id} in DMChannel, skipping.")
                 # If the message is from a DM, just return without further processing
                 return
-                
-            # Skip processing if the message has already been processed
+
+            # Check if user has a restricted role
+            restricted_roles = {823677075751043102, 1187017579013873665, 929756550380286153, 929900016531828797}
+            if message.guild:  # Only check roles if in a guild
+                user_roles = {role.id for role in message.author.roles}
+                if restricted_roles.intersection(user_roles):
+                    mylogger.info(f"Message {message.id} from user with restricted role, skipping.")
+                    return
+            # Skip process
+            # ing if the message has already been processed
             if message.id in RedBotCog.processed_message_ids:
                 mylogger.info(f"Message {message.id} already processed, skipping.")
                 return
