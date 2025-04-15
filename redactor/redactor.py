@@ -10,6 +10,13 @@ from redbot.core import commands, app_commands
 START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information.\n\nIf you feel this message should not have been redacted, resend it with `!noredact` in your message to avoid redaction."
 FORBIDDEN_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information."
 NO_REDACT_COMMAND = "!noredact"
+# List of role IDs that should skip redaction
+IGNORED_ROLE_IDS = [
+    823677075751043102,
+    1187017579013873665,
+    929756550380286153,
+    929900016531828797,
+]
 
 # Create logger
 mylogger = logging.getLogger('redactor')
@@ -55,6 +62,11 @@ class RedBotCog(commands.Cog):
                 mylogger.info(f"Redactor invoked by {author_name} in {guild_name}/{channel_name} (ID: {message.guild.id if message.guild else 'N/A'}/{message.channel.id if message.guild else 'N/A'})")
         
                 # mylogger.info(f"Received message (ID: {message.id}) from {message.author.name} in #{message.channel.name}")
+
+                # Skip processing if user has an ignored role
+                if any(role.id in IGNORED_ROLE_IDS for role in message.author.roles):
+                    mylogger.info(f"Skipping redaction for {message.author.name} due to ignored role.")
+                    return
 
                 if message.content.strip() == NO_REDACT_COMMAND:
                     return
