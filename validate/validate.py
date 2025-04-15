@@ -11,6 +11,11 @@ YAML_REGEX = r'```(yaml|yml)(.*?)```'
 mylogger = logging.getLogger('validate')
 mylogger.setLevel(logging.DEBUG)
 
+# List of channel IDs to ignore validation in
+IGNORED_CHANNEL_IDS = [
+    929901956271570945,
+    1193948895496118303,
+]
 
 class RedBotCogValidate(commands.Cog):
     def __init__(self, bot):
@@ -27,6 +32,11 @@ class RedBotCogValidate(commands.Cog):
             f"Validate invoked by {author_name} in {guild_name}/{channel_name} (ID: {message.guild.id if message.guild else 'N/A'}/{message.channel.id if message.guild else 'N/A'})")
 
         if message.author.bot:
+            return
+
+        # Skip validation if the channel is in the ignored list
+        if message.channel.id in IGNORED_CHANNEL_IDS:
+            mylogger.info(f"Skipping validation in ignored channel ID: {message.channel.id}")
             return
 
         # Check for !noyamlcheck in the first line or anywhere in the message
