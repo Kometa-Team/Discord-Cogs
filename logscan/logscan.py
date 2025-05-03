@@ -757,7 +757,7 @@ class RedBotCogLogscan(commands.Cog):
                 pmm_legacy_errors.append(idx)
             elif ", in _upload_image" in line:
                 image_size.append(idx)
-            elif "(Linuxserver)" in line and "Version:" in line:
+            elif "(Linuxserver" in line and "Version:" in line:
                 lsio_errors.append(idx)
             elif "My Anime List Connection Failed" in line:
                 mal_connection_errors.append(idx)
