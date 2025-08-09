@@ -59,6 +59,27 @@ ALLOWED_CHAT = 1138466667165405244
 
 global_divider = "="
 
+# --- PMS security vulnerability helpers (non-invasive; keep existing checks as-is) ---
+
+def _parse_pms_version_tuple(ver: str):
+    """Return a 4-int tuple for PMS versions like '1.41.7.9100' (trims any '-xyz')."""
+    ver = ver.split("-", 1)[0].strip()  # drop any '-whatever' suffix if present
+    parts = ver.split(".")
+    nums = []
+    for i in range(4):
+        try:
+            nums.append(int(parts[i]))
+        except Exception:
+            nums.append(0)
+    return tuple(nums[:4])
+
+def _version_in_inclusive_range(ver: str, low: tuple, high: tuple) -> bool:
+    v = _parse_pms_version_tuple(ver)
+    return low <= v <= high
+
+# Vulnerable range you want to flag (adjust as needed)
+_PMS_VULN_LOW  = (1, 41, 7, 0)      # 1.41.7.x
+_PMS_VULN_HIGH = (1, 42, 0, 99999)  # through 1.42.0.x
 
 def initialize_variables():
     global script_name, script_env, target_thread_id, target_masters_thread_id, specific_user_id, sohjiro_id, support_role_id, ALLOWED_HELP, ALLOWED_TEST, ALLOWED_CHAT
@@ -691,6 +712,7 @@ class RedBotCogLogscan(commands.Cog):
         rounding_errors = []
         ruamel_errors = []
         run_order_errors = []
+        security_vuln_hits = []
         tautulli_url_errors = []
         tautulli_apikey_errors = []
         timeout_errors = []
@@ -727,7 +749,18 @@ class RedBotCogLogscan(commands.Cog):
                         # Add the identifier to unique_entries set to mark it as processed
                         unique_entries.add(identifier)
 
-            elif "Config Error: anidb sub-attribute" in line:
+            # Detect PMS versions in "Connected to server ..." lines and flag the vulnerable range
+            m = re.search(
+                r"Connected to server\s+(.+?)\s+(?:\(?\s*(?:version|Version:)\s+)(\d+\.\d+\.\d+\.\d+(?:-[A-Za-z0-9]+)?)",
+                line
+            )
+            if m:
+                sn = m.group(1).strip()
+                ver = m.group(2).strip()
+                if _version_in_inclusive_range(ver, _PMS_VULN_LOW, _PMS_VULN_HIGH):
+                    security_vuln_hits.append((sn, ver, idx))
+        
+            if "Config Error: anidb sub-attribute" in line:
                 anidb_auth_errors.append(idx)
             elif "apikey is blank" in line:
                 api_blank_errors.append(idx)
@@ -1481,6 +1514,32 @@ class RedBotCogLogscan(commands.Cog):
             )
             special_check_lines.append(run_order_error_message)
 
+        if security_vuln_hits:
+            seen = set()
+            items = []
+            for sn, ver, ln in security_vuln_hits:
+                key = (sn, ver, ln)
+                if key not in seen:
+                    seen.add(key)
+                    items.append((sn, ver, ln))
+
+            vuln_low_str  = ".".join(map(str, _PMS_VULN_LOW))
+            vuln_high_str = ".".join(map(str, _PMS_VULN_HIGH))
+            url_line = "[https://forums.plex.tv/t/plex-media-server-security-update/928341]"
+
+            msg = (
+                "🚀 **PMS SECURITY ALERT**\n"
+                "A Plex Media Server version in a **known vulnerable range** was detected.\n"
+                f"**Affected range:** `{vuln_low_str}` **through** `{vuln_high_str}`\n"
+                "Please **upgrade Plex Media Server** to a safe release as soon as possible.\n"
+                f"For more information on this see url: {url_line}\n"
+                "Detected on:\n"
+            )
+            for sn, ver, ln in items:
+                msg += f"- Server: {sn}, Version: `{ver}`, Line: {ln}\n"
+
+            special_check_lines.append(msg)
+    
         if tautulli_apikey_errors:
             url_line = "[https://kometa.wiki/en/latest/config/tautulli]"
             formatted_errors = self.format_contiguous_lines(tautulli_apikey_errors)
