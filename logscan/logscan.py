@@ -1526,7 +1526,6 @@ class RedBotCogLogscan(commands.Cog):
             vuln_low_str  = ".".join(map(str, _PMS_VULN_LOW))
             vuln_high_str = ".".join(map(str, _PMS_VULN_HIGH))
             url_line = "[https://forums.plex.tv/t/plex-media-server-security-update/928341]"
-            formatted_errors = self.format_contiguous_lines(security_vuln_hits)
 
             msg = (
                 "🚀 **PMS SECURITY ALERT**\n"
