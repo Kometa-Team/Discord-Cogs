@@ -1534,7 +1534,7 @@ class RedBotCogLogscan(commands.Cog):
                 f"**Affected range:** `{vuln_low_str}` **through** `{vuln_high_str}`\n"
                 "Please **upgrade Plex Media Server** to a safe release as soon as possible.\n"
                 f"For more information on this see url: {url_line}\n"
-                f"{len(security_vuln_hits)} line(s) with these errors. Line number(s): {formatted_errors}"
+                f"{len(security_vuln_hits)} line(s) with these errors."
                 "Detected on:\n"
             )
             for sn, ver, ln in items:
