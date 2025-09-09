@@ -1532,6 +1532,8 @@ class RedBotCogLogscan(commands.Cog):
                 "A Plex Media Server version in a **known vulnerable range** was detected.\n"
                 f"**Affected range:** `{vuln_low_str}` **through** `{vuln_high_str}`\n"
                 "Please **upgrade Plex Media Server** to a safe release as soon as possible.\n"
+                "Until then, Plex will block access from others reaching your server.\n"
+                "UPGRADE IMMEDIATELY!\n"
                 f"For more information on this see url: {url_line}\n"
                 f"{len(security_vuln_hits)} line(s) with these errors."
                 "Detected on:\n"
