@@ -1857,21 +1857,34 @@ class RedBotCogLogscan(commands.Cog):
         return "\n".join(cleaned_lines)
 
     def validate_against_schema(self, yaml_content, schema):
+        """
+        Always returns (is_valid: bool, error_details: Optional[dict]).
+        On failure, error_details is a dict with keys: message, path, validator.
+        """
         try:
-            # Validate YAML data against the JSON schema
             jsonschema.validate(instance=yaml_content, schema=schema)
-
-            # Validation successful if no exceptions are raised
-            return True
-
+            return True, None  # success: tuple + None
         except jsonschema.ValidationError as e:
-            # Extract details about the validation error
             error_details = {
-                "message": str(e),
+                "message": e.message,  # shorter, cleaner than str(e)
                 "path": list(e.path),
-                "validator": e.validator
+                "validator": e.validator,
             }
-            return False, error_details  # Return both the error flag and error details
+            return False, error_details
+        except jsonschema.SchemaError as e:
+            error_details = {
+                "message": f"Invalid schema: {e.message}",
+                "path": [],
+                "validator": "schema",
+            }
+            return False, error_details
+        except Exception as e:
+            error_details = {
+                "message": f"{type(e).__name__}: {e}",
+                "path": [],
+                "validator": None,
+            }
+            return False, error_details
 
     def parse_yaml_schema_from_content(self, content):
         try:
