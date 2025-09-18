@@ -1856,22 +1856,22 @@ class RedBotCogLogscan(commands.Cog):
         cleaned_lines = [line[1:] if line.startswith(" ") else line for line in content.splitlines()]
         return "\n".join(cleaned_lines)
 
-    def validate_against_schema(self, data, schema):
-        """
-        Validate the parsed YAML against the schema.
-        Always returns a 2-tuple: (is_valid: bool, error_details: Optional[str]).
-        """
+    def validate_against_schema(self, yaml_content, schema):
         try:
-            jsonschema.validate(instance=data, schema=schema)
-            # Always return tuple, even if there are no errors
-            return True, None
+            # Validate YAML data against the JSON schema
+            jsonschema.validate(instance=yaml_content, schema=schema)
+
+            # Validation successful if no exceptions are raised
+            return True
+
         except jsonschema.ValidationError as e:
-            return False, f"Schema validation error: {e.message}"
-        except jsonschema.SchemaError as e:
-            return False, f"Invalid schema: {e.message}"
-        except Exception as e:
-            # Catch-all for unexpected errors
-            return False, f"Unexpected validation error: {type(e).__name__}: {e}"
+            # Extract details about the validation error
+            error_details = {
+                "message": str(e),
+                "path": list(e.path),
+                "validator": e.validator
+            }
+            return False, error_details  # Return both the error flag and error details
 
     def parse_yaml_schema_from_content(self, content):
         try:
