@@ -11,6 +11,8 @@ from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
+mylogger.info(f"[version] GitHub token present? {bool(GITHUB_API_TOKEN)}")
+
 
 # Get the GitHub token from the environment variable
 GITHUB_API_TOKEN = os.getenv("GITHUB_API_TOKEN")
