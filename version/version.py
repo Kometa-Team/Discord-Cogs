@@ -28,6 +28,7 @@ headers = {
 TIMEOUT_SECONDS = 180  # 3 minutes
 API_THROTTLE_SECONDS = 0  # Throttle between API requests
 
+
 class MyVersion(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -79,14 +80,18 @@ class MyVersion(commands.Cog):
             return iso_date  # In case of formatting errors, return the original string
 
     @commands.command(name="version")
-    @app_commands.describe(message_link="Fetch the current release versions of Kometa, ImageMaid, and Kometa Overlay Reset")
+    @app_commands.describe(
+        message_link="Fetch the current release versions of Kometa, ImageMaid, Kometa Overlay Reset, and Quickstart")
     @commands.cooldown(1, 60, commands.BucketType.user)  # 1 command per 60 seconds per user
     async def version(self, ctx: commands.Context):
         owner = "Kometa-Team"
         repos = {
             "Kometa": {"repo": "Kometa", "branches": ["master", "develop", "nightly"], "path": "VERSION"},
             "ImageMaid": {"repo": "ImageMaid", "branches": ["master", "develop", "nightly"], "path": "VERSION"},
-            "Overlay Reset": {"repo": "Overlay-Reset", "branches": ["master", "develop", "nightly"], "path": "VERSION"}
+            "Overlay Reset": {"repo": "Overlay-Reset", "branches": ["master", "develop", "nightly"], "path": "VERSION"},
+            # Quickstart uses VERSION + BUILDNUM; use BUILDNUM's commit time as "Released"
+            "Quickstart": {"repo": "Quickstart", "branches": ["master", "develop"], "path": "VERSION",
+                           "build_path": "BUILDNUM"},
         }
 
         # Log the user invoking the command
@@ -99,14 +104,32 @@ class MyVersion(commands.Cog):
             repo_name = project_data['repo']
             branches = project_data['branches']
             path = project_data['path']
+            build_path = project_data.get('build_path')  # only present for Quickstart
 
             for branch in branches:
+                # Base VERSION
                 raw_url = f"https://raw.githubusercontent.com/{owner}/{repo_name}/{branch}/{path}"
                 version = self.get_version_from_url(raw_url)
-                commit_date = self.get_commit_info_from_github_api(owner, repo_name, branch, path)
+
+                # Optional BUILDNUM (Quickstart)
+                buildnum = None
+                if build_path:
+                    build_url = f"https://raw.githubusercontent.com/{owner}/{repo_name}/{branch}/{build_path}"
+                    buildnum = self.get_version_from_url(build_url)
+                    if buildnum == "Unknown":
+                        buildnum = None
+
+                # Pick which file to use for the commit timestamp
+                commit_target = build_path if (build_path and buildnum) else path
+                commit_date = self.get_commit_info_from_github_api(owner, repo_name, branch, commit_target)
+
+                # Compose display version string
+                display_version = version if version != "Unknown" else "Unknown"
+                if buildnum:
+                    display_version = f"{display_version} (build {buildnum})"
 
                 # Store the version and commit date
-                versions[branch] = (version, commit_date)
+                versions[branch] = (display_version, commit_date)
 
                 # Throttle requests to avoid hitting API rate limits
                 time.sleep(API_THROTTLE_SECONDS)
@@ -133,7 +156,8 @@ class MyVersion(commands.Cog):
 
         # Build the update instructions embed
         async def build_update_instructions_embed(user):
-            embed = discord.Embed(title="Update Instructions", description=f"Here are the commands to use:", color=discord.Color.random())
+            embed = discord.Embed(title="Update Instructions", description=f"Here are the commands to use:",
+                                  color=discord.Color.random())
             update_text = "`!updategit` if you are running kometateam apps locally\n`!updatedocker` if using kometateam apps in Docker\n`!updateunraid` for kometateam apps in Unraid"
             embed.add_field(name="Commands", value=update_text, inline=False)
             return embed
@@ -147,7 +171,8 @@ class MyVersion(commands.Cog):
             async def callback(self, interaction: discord.Interaction):
                 # Build and send the update instructions embed when button is clicked
                 embed = await build_update_instructions_embed(self.user)
-                await interaction.response.edit_message(embed=embed, view=self.view)  # Keep the dropdown and button view active
+                await interaction.response.edit_message(embed=embed,
+                                                        view=self.view)  # Keep the dropdown and button view active
 
         # Dropdown menu interaction
         class VersionSelect(discord.ui.Select):
@@ -155,7 +180,8 @@ class MyVersion(commands.Cog):
                 options = [
                     discord.SelectOption(label="Kometa", description="View Kometa versions"),
                     discord.SelectOption(label="ImageMaid", description="View ImageMaid versions"),
-                    discord.SelectOption(label="Overlay Reset", description="View Kometa Overlay Reset versions")
+                    discord.SelectOption(label="Overlay Reset", description="View Kometa Overlay Reset versions"),
+                    discord.SelectOption(label="Quickstart", description="View Quickstart versions"),
                 ]
                 super().__init__(placeholder="Choose a project...", options=options)
 
@@ -184,11 +210,13 @@ class MyVersion(commands.Cog):
 
         # Send the initial message with the dropdown and button
         view = VersionView(ctx.author)  # Create the view to keep track of it
-        message = await ctx.send(f"Hey {ctx.author.mention}, select a project to view its current releases. This interaction will expire in {TIMEOUT_SECONDS} seconds.", view=view)
+        message = await ctx.send(
+            f"Hey {ctx.author.mention}, select a project to view its current releases. This interaction will expire in {TIMEOUT_SECONDS} seconds.",
+            view=view)
 
         # Wait for the defined timeout duration, then disable the buttons and dropdown
         await asyncio.sleep(TIMEOUT_SECONDS)
-        
+
         # Disable all components (buttons and dropdowns)
         for item in view.children:
             item.disabled = True
