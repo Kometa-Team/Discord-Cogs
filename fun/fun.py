@@ -52,6 +52,10 @@ class RedBotCogFun(commands.Cog):
             channel_id = message.channel.parent_id if isinstance(message.channel,
                                                                  discord.Thread) else message.channel.id
             if channel_id not in ALLOWED_CHANNEL_IDS:
+                mylogger.info(
+                    f"Ignoring message in {message.guild.name}/{getattr(message.channel, 'name', 'Unknown')} "
+                    f"(channel_id={channel_id}) because it's not in ALLOWED_CHANNEL_IDS"
+                )
                 return
 
         # Log command invocation details
