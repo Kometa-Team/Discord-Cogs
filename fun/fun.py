@@ -8,6 +8,15 @@ from redbot.core import commands
 mylogger = logging.getLogger('fun')
 mylogger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
 
+# Optional: restrict to these channel IDs.
+# Empty set = unrestricted (no behavior change).
+ALLOWED_CHANNEL_IDS = {
+    # 1141467136158613544,  # #botmoose-tests
+    # 1141467174570049696,  # #luma-tests-103
+    # 1100494390071410798,  # #bot-spam
+}
+
+
 class RedBotCogFun(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -37,12 +46,21 @@ class RedBotCogFun(commands.Cog):
         if message.author == self.bot.user:
             return
 
+        # Do nothing unless allowlist is non-empty
+        if message.guild and ALLOWED_CHANNEL_IDS:
+            # Treat threads as their parent channel for gating
+            channel_id = message.channel.parent_id if isinstance(message.channel,
+                                                                 discord.Thread) else message.channel.id
+            if channel_id not in ALLOWED_CHANNEL_IDS:
+                return
+
         # Log command invocation details
         author_name = f"{message.author.name}#{message.author.discriminator}" if message.author else "Unknown"
         guild_name = message.guild.name if message.guild else "Direct Message"
         channel_name = message.channel.name if isinstance(message.channel, discord.TextChannel) else "Direct Message"
-        
-        mylogger.info(f"Fun invoked by {author_name} in {guild_name}/{channel_name} (ID: {message.guild.id if message.guild else 'N/A'}/{message.channel.id if message.guild else 'N/A'})")
+
+        mylogger.info(
+            f"Fun invoked by {author_name} in {guild_name}/{channel_name} (ID: {message.guild.id if message.guild else 'N/A'}/{message.channel.id if message.guild else 'N/A'})")
 
         content_lower = message.content.strip().lower()
 
@@ -91,7 +109,8 @@ class RedBotCogFun(commands.Cog):
                 embed.set_author(name=message.author.display_name, icon_url=message.author.avatar.url)
 
                 # Set footer with bot information
-                embed.set_footer(text=f"Brought to you by {self.bot_name}", icon_url=self.bot.user.avatar.url or discord.Embed.Empty)
+                embed.set_footer(text=f"Brought to you by {self.bot_name}",
+                                 icon_url=self.bot.user.avatar.url or discord.Embed.Empty)
                 try:
                     await message.channel.send(embed=embed, file=discord.File(image_path))
                     mylogger.info(f"Sent {reaction_trigger.upper()} embed with image")
