@@ -11,9 +11,9 @@ mylogger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
 # Optional: restrict to these channel IDs.
 # Empty set = unrestricted (no behavior change).
 ALLOWED_CHANNEL_IDS = {
-    # 1141467136158613544,  # #botmoose-tests
-    # 1141467174570049696,  # #luma-tests-103
-    # 1100494390071410798,  # #bot-spam
+    1141467136158613544,  # #botmoose-tests
+    1141467174570049696,  # #luma-tests-103
+    1100494390071410798,  # #bot-spam
 }
 
 
