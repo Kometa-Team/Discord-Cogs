@@ -11,8 +11,6 @@ from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
-mylogger.info(f"[version] GitHub token present? {bool(GITHUB_API_TOKEN)}")
-
 
 # Get the GitHub token from the environment variable
 GITHUB_API_TOKEN = os.getenv("GITHUB_API_TOKEN")
@@ -20,6 +18,7 @@ GITHUB_API_TOKEN = os.getenv("GITHUB_API_TOKEN")
 # Create logger
 mylogger = logging.getLogger('version')
 mylogger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
+mylogger.info(f"[version] GitHub token present? {bool(GITHUB_API_TOKEN)}")
 
 # Headers for authenticated API requests
 headers = {}
