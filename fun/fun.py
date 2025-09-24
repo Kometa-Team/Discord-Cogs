@@ -9,8 +9,9 @@ mylogger.setLevel(logging.DEBUG)
 
 # 🔒 Only fire in these channels (IDs). Per-guild is fine; just add more IDs.
 ALLOWED_CHANNEL_IDS = {
-    123456789012345678,  # #memes
-    234567890123456789,  # #fun
+    1141467136158613544,  # #botmoose-tests
+    1141467174570049696,  # #luma-tests-1038
+    1100494390071410798,  # #bot-spam
 }
 
 class RedBotCogFun(commands.Cog):
