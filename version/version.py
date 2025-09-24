@@ -20,9 +20,12 @@ mylogger = logging.getLogger('version')
 mylogger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
 
 # Headers for authenticated API requests
-headers = {
-    "Authorization": f"token {GITHUB_API_TOKEN}" if GITHUB_API_TOKEN else None
-}
+headers = {}
+if GITHUB_API_TOKEN:
+    headers["Authorization"] = f"token {GITHUB_API_TOKEN}"
+    headers["Accept"] = "application/vnd.github+json"
+    headers["User-Agent"] = "KometaBot/1.0"
+
 
 # Define the timeout duration
 TIMEOUT_SECONDS = 180  # 3 minutes
