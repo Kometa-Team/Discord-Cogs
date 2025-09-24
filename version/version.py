@@ -18,7 +18,6 @@ GITHUB_API_TOKEN = os.getenv("GITHUB_API_TOKEN")
 # Create logger
 mylogger = logging.getLogger('version')
 mylogger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
-mylogger.info(f"[version] GitHub token present? {bool(GITHUB_API_TOKEN)}")
 
 # Headers for authenticated API requests
 headers = {}
@@ -100,6 +99,7 @@ class MyVersion(commands.Cog):
 
         # Log the user invoking the command
         mylogger.info(f"Version command invoked by {ctx.author} (ID: {ctx.author.id}) in {ctx.guild}/{ctx.channel}")
+        mylogger.info(f"[version] GitHub token present? {bool(GITHUB_API_TOKEN)}")
 
         # Fetch version and commit date for each project
         def get_versions_for_project(project_name, project_data):
