@@ -2941,7 +2941,7 @@ class RedBotCogLogscan(commands.Cog):
                                 mylogger.info(
                                     f"SLASH-💥Attachment {attachment.filename} does not seem to be a complete or valid Kometa log file.")
                                 await ctx.send(
-                                    f"💥Attachment {attachment.filename} does not seem to be a complete or valid Kometa log file.💥",
+                                    f"SLASH-💥Attachment {attachment.filename} does not seem to be a complete or valid Kometa log file.💥",
                                     ephemeral=True)
                 except IndexError:
                     mylogger.info("SLASH-💥The specified message has no attachments.")
@@ -3090,6 +3090,7 @@ class RedBotCogLogscan(commands.Cog):
                             # Rest of the processing code when "✅" is clicked
                             await self.process_attachment(ctx, user, invoker, attachment, content, content_bytes)
                     else:
+                        mylogger.info(f"kometa string not found")
                         if bad_channel:
                             await message.reply(bad_channel_msg, delete_after=20, suppress_embeds=True)
                             return
