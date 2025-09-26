@@ -2896,7 +2896,7 @@ class RedBotCogLogscan(commands.Cog):
                             file_name, content, content_bytes = extracted_file
                             # Check if the extracted file has a supported extension
                             if any(file_name.lower().endswith(ext) for ext in SUPPORTED_FILE_EXTENSIONS):
-                                if ("[kometa.py:" in content or "plex_meta_manager.py:" in content) and not bad_channel:
+                                if ("[kometa.py:" in content.lower() or "[plex_meta_manager.py:" in content.lower()) and not bad_channel:
                                     mylogger.info(
                                         f"SLASH-kometa.py/plex_meta_manager.py: detected in content. Sending to prompt_user_and_get_decision")
                                     decision, invoker = await self.prompt_user_and_get_decision(ctx, attachment)
@@ -3053,7 +3053,7 @@ class RedBotCogLogscan(commands.Cog):
                         file_name, content, content_bytes = extracted_file
                         # Check if the extracted file has a supported extension
                         if any(file_name.lower().endswith(ext) for ext in SUPPORTED_FILE_EXTENSIONS):
-                            if ("[kometa.py:" in content or "plex_meta_manager.py:" in content) and not bad_channel:
+                            if ("[kometa.py:" in content.lower() or "[plex_meta_manager.py:" in content.lower()) and not bad_channel:
                                 mylogger.info(
                                     f"kometa.py/plex_meta_manager.py: detected in content. Sending to prompt_user_and_get_decision")
                                 decision, invoker = await self.prompt_user_and_get_decision(ctx, attachment)
@@ -3081,7 +3081,7 @@ class RedBotCogLogscan(commands.Cog):
                         mylogger.error(f"UnicodeDecodeError: {e}")
                         content = content_bytes.decode("utf-8", errors="replace")
 
-                    if ("[kometa.py:" in content or "plex_meta_manager.py:" in content) and not bad_channel:
+                    if ("[kometa.py:" in content.lower() or "[plex_meta_manager.py:" in content.lower()) and not bad_channel:
                         mylogger.info(
                             f"kometa.py/plex_metamanager.py: detected in content. Sending to prompt_user_and_get_decision")
                         decision, invoker = await self.prompt_user_and_get_decision(ctx, attachment)
