@@ -3,7 +3,7 @@
     "install_msg" : "You have just installed the 'version' cog. Activate with `!version`",
     "name" : "version",
     "short" : "This cog will react to `!version` within your server and grab version information related to kometateam github repos.",
-    "requirements" : ["None"],
+    "requirements": ["python-dotenv"],
     "description" : "This cog will react to `!version` within your server and grab version information related to kometateam github repos.",
     "permissions" : ["Not sure"],
     "tags" : ["version, embeds, auto-responder"]
