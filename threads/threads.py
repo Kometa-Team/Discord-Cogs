@@ -73,7 +73,7 @@ class Threads(commands.Cog):
             self.sponsor = 1232124371901087764  # Test Sponsor
             self.general_chat = 1138466667165405244  # #bot-chat
             self.parent_channel_id = 1138466814519693412  # #bot-forums
-        elif self.bot.user.id == 1132406656785973418:  # Luma
+        elif self.bot.user.id == 1422494031388344340:  # Luma
             self.role1 = 1097919568334311495  # Priority Support
             self.role2 = 938443185347244033  # Support
             self.sponsor = 862041125706268702  # Sponsor

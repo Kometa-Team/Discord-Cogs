@@ -1,0 +1,10 @@
+{
+    "author" : ["Kometa-Team"],
+    "install_msg" : "You have just installed the 'showcase_lockdown' cog. This cog will monitor specific channels and prevent new posts by deleting them, then remind users to post in the community showcase channel instead.",
+    "name" : "showcase_lockdown",
+    "short" : "Monitors locked channels and redirects users to the showcase channel.",
+    "requirements" : ["None"],
+    "description" : "This cog monitors designated channels (by ID) and deletes any new posts. It then tags the user with a reminder message to use the showcase channel instead. Existing threads within those channels remain unaffected.",
+    "permissions" : ["Manage Messages", "Send Messages"],
+    "tags" : ["moderation", "channel monitor", "auto-responder", "cleanup"]
+}

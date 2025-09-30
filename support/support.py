@@ -68,7 +68,7 @@ class RedBotCogSupport(commands.Cog):
                 forum_channel_id = None
                 if self.bot_uid == 1138446898487894206:  # Botmoose20
                     forum_channel_id = 1138466814519693412  # #bot-forums
-                elif self.bot_uid == 1132406656785973418:  # Luma
+                elif self.bot_uid == 1422494031388344340:  # Luma
                     forum_channel_id = 1006644783743258635  # #kometa-help
 
                 # Get the forum channel

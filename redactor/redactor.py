@@ -91,7 +91,7 @@ class RedBotCog(commands.Cog):
                     # Determine the appropriate parent channel ID based on bot user ID
                     if self.bot_uid == 1138446898487894206:  # Botmoose20
                         parent_channel_id = 1138466814519693412   # #bot-forums
-                    elif self.bot_uid == 1132406656785973418:  # Luma
+                    elif self.bot_uid == 1422494031388344340:  # Luma
                         parent_channel_id = 1006644783743258635  # #kometa-help
 
                     # Check if the parent channel ID matches

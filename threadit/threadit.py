@@ -75,7 +75,7 @@ class RedBotCogThreadit(commands.Cog):
             image_showcase_id = 1186898546520236052  # #test-image-showcase
             config_showcase_id = 1186897793198071859  # #test-config-showcase
             moved_to_channel_id = 1138466667165405244  # #bot-chat
-        elif self.bot_uid == 1132406656785973418:  # Luma
+        elif self.bot_uid == 1422494031388344340:  # Luma
             image_showcase_id = 927936511238869042  # #image-showcase
             config_showcase_id = 921844476283064381  # #config-showcase
             moved_to_channel_id = 1100494390071410798  # #bot-spam

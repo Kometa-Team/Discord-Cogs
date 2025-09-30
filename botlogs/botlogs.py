@@ -40,7 +40,7 @@ class BotLogs(commands.Cog):
         bot_uid = self.bot.user.id
         if bot_uid == 1138446898487894206:  # Botmoose20
             service_name = 'botmoose@botmoose'
-        elif bot_uid == 1132406656785973418:  # Luma
+        elif bot_uid == 1422494031388344340:  # Luma
             service_name = 'luma@luma'
         else:
             await ctx.send("Unknown bot UID.")
