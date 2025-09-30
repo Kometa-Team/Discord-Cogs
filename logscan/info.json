@@ -3,7 +3,7 @@
     "install_msg" : "You have just installed the 'logscan' cog. Have fun! Activate with `!logscan <message_link>` to review a kometa meta.log and make reccomendstions",
     "name" : "logscan",
     "short" : "Activate with `!logscan <message_link>` to review a kometa meta.log and make reccomendstions",
-    "requirements": ["rarfile", "py7zr"],
+    "requirements": ["rarfile", "py7zr", "jsonschema"],
     "description" : "Activate with `!logscan <message_link>` to review a kometa meta.log and make reccomendstions",
     "permissions" : ["Not sure"],
     "tags" : ["logscan, embeds, auto-responder"]
