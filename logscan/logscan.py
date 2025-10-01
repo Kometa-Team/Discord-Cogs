@@ -1816,7 +1816,7 @@ class RedBotCogLogscan(commands.Cog):
     def extract_config_schema(self, content):
         """
         Schema-validate the extracted config using the RAW log extractor that tracks
-        [config.py:###] tags. Falls back to `content` if no self._raw_content is set.
+        [config.py:###] tags. Falls back to `content` if no self._raw_content is set
         """
         raw = getattr(self, "_raw_content", None) or content
         extracted_lines = self.extract_config_lines_from_raw(raw)
