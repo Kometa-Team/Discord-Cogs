@@ -1801,116 +1801,93 @@ class RedBotCogLogscan(commands.Cog):
 
         return server_info, all_lines
 
-    def extract_config(self, content):
-        # ignore 'content' here and use the raw source captured earlier
-        raw = getattr(self, "_raw_content", None) or content
-        extracted_lines = self.extract_config_lines_from_raw(raw)
-        extracted_content = "\n".join(extracted_lines)
-
-        if extracted_content:
-            cleaned_content = self.clean_extracted_content(extracted_content)
-            return self.parse_yaml_from_content(cleaned_content)
-        else:
-            return None, None, None
-
-    def extract_config_schema(self, content):
+    # --- keep indentation from logs ---
+    def extract_config_lines_from_raw(self, content: str):
         """
-        Schema-validate the extracted config using the RAW log extractor that tracks
-        [config.py:###] tags. Falls back to `content` if no self._raw_content is set
+        Extract the Redacted Config block from RAW logs (not pre-cleaned),
+        preserving leading indentation after the visual '|' column.
+        Break when [config.py:<line>] tag changes, on warnings, or on cache init.
         """
-        raw = getattr(self, "_raw_content", None) or content
-        extracted_lines = self.extract_config_lines_from_raw(raw)
-        extracted_content = "\n".join(extracted_lines)
+        import re
+        out_lines = []
+        in_block = False
+        start_tag = None  # (file, lineno)
 
-        if extracted_content:
-            cleaned_content = self.clean_extracted_content(extracted_content)
-            return self.parse_yaml_schema_from_content(cleaned_content)
-        return None, None, None
-
-    def extract_config_lines_from_raw(self, raw_content):
-        """
-        Extract config lines from RAW content (not cleaned), starting after 'Redacted Config'.
-        Capture only lines that are tagged with [config.py:###]. Stop when the tag changes away
-        from config.py or no longer matches, or when explicit hard-stop markers appear.
-        """
-        extraction_started = False
-        extracted_lines = []
-
-        # Matches lines like:
-        # [2025-10-01 15:21:21,858] [config.py:206] [DEBUG]    |   timeout: 60    |
-        tag_re = re.compile(
-            r"""
-            ^(?:\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3}\]\s+)?   # optional timestamp
-            \[(?P<file>config\.py):(?P<lineno>\d+)\]\s+                 # [config.py:###]
-            \[(?P<level>[A-Z]+)\]\s*\|\s*                               # [LEVEL] |
-            (?P<body>.*)$                                               # rest of line (YAML-ish)
-            """,
-            re.VERBOSE
+        # NOTE: DO NOT swallow spaces after the pipe!
+        pat = re.compile(
+            r'^\[(?P<ts>.*?)\] '
+            r'\[(?P<file>[^:\]]+):(?P<lineno>\d+)\]\s+'
+            r'\[(?P<level>[A-Z]+)\]\s*\|(?P<body>.*)$'  # <-- key change: no \s* after '|'
         )
 
-        current_file = None  # 'config.py' when set
-
-        # Optional safety: don't run away if the log is malformed
-        MAX_CAPTURE_LINES = 2000
-
-        for lineno, line in enumerate(raw_content.splitlines(), start=1):
-            if not extraction_started:
-                if "Redacted Config" in line:
-                    extraction_started = True
+        for idx, raw in enumerate(content.splitlines(), 1):
+            m = pat.match(raw)
+            if not m:
                 continue
 
-            # Hard-stop guards that always end capture
-            if "Config Warning: " in line:
-                mylogger.info(f"****break on config warning at line {lineno}")
-                break
-            if "Initializing cache database at" in line:
-                mylogger.info(f"****break on cache database at line {lineno}")
-                break
+            body = m.group("body")  # includes any leading spaces from YAML
+            file_tag = (m.group("file"), m.group("lineno"))
 
-            m = tag_re.match(line)
-            if not m:
-                # Tag no longer matches the expected [config.py:###] pattern
-                mylogger.info(f"****break: tag no longer matches [config.py:###] at line {lineno}")
+            if "Redacted Config" in body:
+                in_block = True
+                start_tag = file_tag
+                mylogger.debug(f"config capture started with tag {start_tag} at line {idx}")
+                continue
+
+            if not in_block:
+                continue
+
+            # stop conditions
+            if file_tag != start_tag:
+                mylogger.info(f"break: tag changed from {start_tag} to {file_tag} at line {idx}")
                 break
-
-            file_name = m.group("file")
-            body = m.group("body")
-
-            # If we ever leave config.py, stop (keeps extraction tightly scoped)
-            if current_file is None:
-                current_file = file_name  # expect 'config.py'
-                mylogger.debug(f"config capture started with tag ({current_file}) at line {lineno}")
-            elif file_name != "config.py":
-                mylogger.info(
-                    f"****break: file changed from {current_file} to {file_name} at line {lineno}"
-                )
+            if "Config Warning:" in body:
+                mylogger.info(f"break on config warning at line {idx}")
+                break
+            if "Initializing cache database at" in body:
+                mylogger.info(f"break on cache database at line {idx}")
                 break
 
-            # Clean the body minimally: trim trailing pipes/spaces only
-            body = body.rstrip(" |")
+            # keep indentation, only strip trailing bar/spaces the logger adds
+            line_body = body.rstrip(" |")
+            out_lines.append(line_body)
 
-            extracted_lines.append(body)
-
-            # Robust timeout parse (handles padding/trailing pipes)
-            tmatch = re.search(r"\btimeout:\s*(\d+)\b", body)
-            if tmatch:
+            # optional: harvest timeout without breaking indentation
+            if "timeout:" in line_body:
                 try:
-                    self.plex_timeout = int(tmatch.group(1))
-                    mylogger.info(f"plex_timeout:{self.plex_timeout} (line {lineno})")
-                except ValueError as e:
-                    mylogger.warning(f"Failed to parse timeout on line {lineno}: {e}")
+                    # split once on 'timeout:' and parse the rest
+                    tval = line_body.split("timeout:", 1)[1].strip()
+                    # keep only the leading integer portion (handles comments)
+                    tnum = int(re.match(r'(\d+)', tval).group(1))
+                    self.plex_timeout = tnum
+                    mylogger.info(f"plex_timeout set to {tnum} (line {idx})")
+                except Exception as e:
+                    mylogger.warning(f"Failed to parse timeout on line {idx}: {e}")
 
-            if len(extracted_lines) >= MAX_CAPTURE_LINES:
-                mylogger.warning(
-                    f"****break: reached MAX_CAPTURE_LINES={MAX_CAPTURE_LINES} at line {lineno}"
-                )
-                break
+        return out_lines
 
-        # Preserve your original behavior: drop the last line if there are 2+ lines
-        if len(extracted_lines) > 1:
-            extracted_lines = extracted_lines[:-1]
+    # --- cleaning that does NOT touch left indentation ---
+    def clean_extracted_content(self, content: str) -> str:
+        # only trim the logger’s right-side decoration; do not touch leading spaces
+        return "\n".join(line.rstrip(" |") for line in content.splitlines())
 
-        return extracted_lines
+    # --- make extractors use RAW logs & avoid indentation loss ---
+    def extract_config(self, content):
+        raw = getattr(self, "_raw_content", None) or content
+        lines = self.extract_config_lines_from_raw(raw)
+        if not lines:
+            return None, None, None
+        # no left-trim! If you want to de-bar trailing '|', call the safe cleaner above.
+        yaml_text = "\n".join(lines)
+        return self.parse_yaml_from_content(yaml_text)
+
+    def extract_config_schema(self, content):
+        raw = getattr(self, "_raw_content", None) or content
+        lines = self.extract_config_lines_from_raw(raw)
+        if not lines:
+            return None, None, None
+        yaml_text = "\n".join(lines)
+        return self.parse_yaml_schema_from_content(yaml_text)
 
     def clean_extracted_content(self, content):
         # Remove one leading space from each line
