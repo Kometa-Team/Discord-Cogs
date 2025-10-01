@@ -1827,22 +1827,22 @@ class RedBotCogLogscan(commands.Cog):
         extraction_started = False
         extracted_lines = []
 
-        for line in content.splitlines():
+        for lineno, line in enumerate(content.splitlines(), start=1):
             if "Redacted Config" in line:
                 extraction_started = True
                 continue
             if extraction_started:
                 # Config Warning at the start of the line means we're done
                 if "Config Warning: " in line:
-                    mylogger.info(f"****break on config warning")
+                    mylogger.info(f"****break on config warning at line {lineno}")
                     break
                 # Check for the global divider condition
                 if line.count(global_divider) >= 10:
-                    mylogger.info(f"****break on global divider")
+                    mylogger.info(f"****break on global divider at line {lineno}")
                     break
                 # Check for "Initializing cache database at" condition
                 if "Initializing cache database at" in line:
-                    mylogger.info(f"****break on cache database")
+                    mylogger.info(f"****break on cache database at line {lineno}")
                     break
 
                 extracted_lines.append(line)
@@ -1851,14 +1851,14 @@ class RedBotCogLogscan(commands.Cog):
                 if "timeout: " in line:
                     timeout_value = line.split("timeout: ")[1].strip()
                     self.plex_timeout = int(timeout_value)
-                    mylogger.info(f"plex_timeout:{self.plex_timeout}")
+                    mylogger.info(f"plex_timeout:{self.plex_timeout} (line {lineno})")
 
         total_lines = len(extracted_lines)
         if total_lines > 1:  # Ensure there are at least 2 lines to process
             extracted_lines = extracted_lines[:-1]
 
-        # mylogger.info(f"*******extracted_lines**********: {extracted_lines}")
         return extracted_lines
+
 
     def clean_extracted_content(self, content):
         # Remove one leading space from each line
