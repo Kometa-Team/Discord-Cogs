@@ -1814,16 +1814,18 @@ class RedBotCogLogscan(commands.Cog):
             return None, None, None
 
     def extract_config_schema(self, content):
-        extracted_lines = self.extract_config_lines(content)
+        """
+        Schema-validate the extracted config using the RAW log extractor that tracks
+        [config.py:###] tags. Falls back to `content` if no self._raw_content is set.
+        """
+        raw = getattr(self, "_raw_content", None) or content
+        extracted_lines = self.extract_config_lines_from_raw(raw)
         extracted_content = "\n".join(extracted_lines)
 
         if extracted_content:
             cleaned_content = self.clean_extracted_content(extracted_content)
             return self.parse_yaml_schema_from_content(cleaned_content)
-        else:
-            return None, None, None
-
-    import re
+        return None, None, None
 
     def extract_config_lines_from_raw(self, raw_content):
         """
@@ -1925,7 +1927,7 @@ class RedBotCogLogscan(commands.Cog):
                     break
                 # Check for the global divider condition
                 if line.count(global_divider) >= 10:
-                    mylogger.info(f"****break on global divider: {global_divider} since {line.count(global_divider)} is >=10) at line {lineno}")
+                    mylogger.info(f"****break on global divider: {global_divider} since {line.count(global_divider)} is >=10 at line {lineno}")
                     break
                 # Check for "Initializing cache database at" condition
                 if "Initializing cache database at" in line:
