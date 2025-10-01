@@ -1837,7 +1837,7 @@ class RedBotCogLogscan(commands.Cog):
                     mylogger.info(f"****break on config warning at line {lineno}")
                     break
                 # Check for the global divider condition
-                if line.count(global_divider) >= 40:
+                if line.count(global_divider) >= 41:
                     mylogger.info(f"****break on global divider: {global_divider} since {line.count(global_divider)} is >=40) at line {lineno}")
                     break
                 # Check for "Initializing cache database at" condition
