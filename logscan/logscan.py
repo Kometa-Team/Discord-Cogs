@@ -171,22 +171,20 @@ class RedBotCogLogscan(commands.Cog):
         return line
 
     async def parse_attachment_content(self, content_bytes):
-        """
-        Parse the attachment content and clean it up.
-        """
         try:
             content = content_bytes.decode('utf-8')
         except Exception as e:
             mylogger.error(f"Error decoding attachment content: {str(e)}")
             content = content_bytes.decode("utf-8", errors="replace")
 
-        # Search for the divider string and set the global divider
+        # Keep raw content for config extraction logic
+        self._raw_content = content
+
+        # Detect divider on raw content (so global_divider is correct)
         self.set_global_divider(content)
 
-        # Clean up the content
+        # You can still return cleaned content for the rest of your features
         cleaned_content = self.cleanup_content(content)
-        # mylogger.info(f"cleaned_content:{cleaned_content}")
-
         return cleaned_content
 
     def set_global_divider(self, content):
@@ -1804,7 +1802,9 @@ class RedBotCogLogscan(commands.Cog):
         return server_info, all_lines
 
     def extract_config(self, content):
-        extracted_lines = self.extract_config_lines(content)
+        # ignore 'content' here and use the raw source captured earlier
+        raw = getattr(self, "_raw_content", None) or content
+        extracted_lines = self.extract_config_lines_from_raw(raw)
         extracted_content = "\n".join(extracted_lines)
 
         if extracted_content:
@@ -1822,6 +1822,95 @@ class RedBotCogLogscan(commands.Cog):
             return self.parse_yaml_schema_from_content(cleaned_content)
         else:
             return None, None, None
+
+    def extract_config_lines_from_raw(self, raw_content):
+        """
+        Extract config lines from RAW log content by following [config.py:###] tags.
+        Stop when the tag no longer matches (e.g., different file/lineno format).
+        """
+        extraction_started = False
+        extracted_lines = []
+
+        # Regex that tolerates/ignores the timestamp block and focuses on [config.py:###]
+        # Examples that would match:
+        # [2025-09-30 12:34:56,789] [config.py:123] [INFO] |
+        # [config.py:123] [INFO] |
+        tag_re = re.compile(
+            r"""
+            ^                                # start of line
+            (?:\[\d{4}-\d{2}-\d{2}           # optional [YYYY-mm-dd
+               \s+\d{2}:\d{2}:\d{2},\d{3}\]\s+)?  #  HH:MM:SS,mmm]
+            \[(?P<file>config\.py):(?P<lineno>\d+)\]\s+  # [config.py:###]
+            \[(?P<level>[A-Z]+)\]\s+\|?      # [LEVEL] and optional trailing pipe
+            """,
+            re.VERBOSE
+        )
+
+        current_tag = None  # tuple (file, lineno)
+
+        for lineno, line in enumerate(raw_content.splitlines(), start=1):
+            if not extraction_started:
+                if "Redacted Config" in line:
+                    extraction_started = True
+                continue
+
+            # once started, stop on special hard stops you already had
+            if "Config Warning: " in line:
+                mylogger.info(f"****break on config warning at line {lineno}")
+                break
+            if line.count(global_divider) >= 41:
+                mylogger.info(
+                    f"****break on global divider '{global_divider}' "
+                    f"since {line.count(global_divider)} is >= 41 at line {lineno}"
+                )
+                break
+            if "Initializing cache database at" in line:
+                mylogger.info(f"****break on cache database at line {lineno}")
+                break
+
+            m = tag_re.match(line)
+            if not m:
+                # the moment the tag stops matching [config.py:###], we stop
+                mylogger.info(f"****break: tag no longer matches [config.py:###] at line {lineno}")
+                break
+
+            tag = (m.group("file"), m.group("lineno"))
+
+            if current_tag is None:
+                current_tag = tag
+                mylogger.debug(f"****config capture started with tag {current_tag} at line {lineno}")
+            else:
+                # if file/lineno tuple changes, stop extraction
+                if tag != current_tag:
+                    mylogger.info(
+                        f"****break: tag changed from {current_tag} to {tag} at line {lineno}"
+                    )
+                    break
+
+            # Strip everything up to (and including) the first pipe, keep the right side as the YAML line.
+            # If no pipe, keep the rest of the line after the matched tag block.
+            after = line[m.end():]  # text after the matched tag block
+            # If there's a leading '|' and maybe a space, trim it
+            after = after.lstrip()
+            if after.startswith("|"):
+                after = after[1:].lstrip()
+
+            extracted_lines.append(after)
+
+            # Optional: pick up timeout while we're here (still on raw; safe)
+            if "timeout: " in after:
+                try:
+                    timeout_value = after.split("timeout: ", 1)[1].strip()
+                    self.plex_timeout = int(timeout_value)
+                    mylogger.info(f"plex_timeout:{self.plex_timeout} (line {lineno})")
+                except Exception as e:
+                    mylogger.warning(f"Failed to parse timeout on line {lineno}: {e}")
+
+        # Your prior logic to drop the last line if needed
+        if len(extracted_lines) > 1:
+            extracted_lines = extracted_lines[:-1]
+
+        return extracted_lines
 
     def extract_config_lines(self, content):
         extraction_started = False
