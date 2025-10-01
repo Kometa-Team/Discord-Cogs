@@ -1823,30 +1823,33 @@ class RedBotCogLogscan(commands.Cog):
         else:
             return None, None, None
 
+    import re
+
     def extract_config_lines_from_raw(self, raw_content):
         """
-        Extract config lines from RAW log content by following [config.py:###] tags.
-        Stop when the tag no longer matches (e.g., different file/lineno format).
+        Extract config lines from RAW content (not cleaned), starting after 'Redacted Config'.
+        Capture only lines that are tagged with [config.py:###]. Stop when the tag changes away
+        from config.py or no longer matches, or when explicit hard-stop markers appear.
         """
         extraction_started = False
         extracted_lines = []
 
-        # Regex that tolerates/ignores the timestamp block and focuses on [config.py:###]
-        # Examples that would match:
-        # [2025-09-30 12:34:56,789] [config.py:123] [INFO] |
-        # [config.py:123] [INFO] |
+        # Matches lines like:
+        # [2025-10-01 15:21:21,858] [config.py:206] [DEBUG]    |   timeout: 60    |
         tag_re = re.compile(
             r"""
-            ^                                # start of line
-            (?:\[\d{4}-\d{2}-\d{2}           # optional [YYYY-mm-dd
-               \s+\d{2}:\d{2}:\d{2},\d{3}\]\s+)?  #  HH:MM:SS,mmm]
-            \[(?P<file>config\.py):(?P<lineno>\d+)\]\s+  # [config.py:###]
-            \[(?P<level>[A-Z]+)\]\s+\|?      # [LEVEL] and optional trailing pipe
+            ^(?:\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3}\]\s+)?   # optional timestamp
+            \[(?P<file>config\.py):(?P<lineno>\d+)\]\s+                 # [config.py:###]
+            \[(?P<level>[A-Z]+)\]\s*\|\s*                               # [LEVEL] |
+            (?P<body>.*)$                                               # rest of line (YAML-ish)
             """,
             re.VERBOSE
         )
 
-        current_tag = None  # tuple (file, lineno)
+        current_file = None  # 'config.py' when set
+
+        # Optional safety: don't run away if the log is malformed
+        MAX_CAPTURE_LINES = 2000
 
         for lineno, line in enumerate(raw_content.splitlines(), start=1):
             if not extraction_started:
@@ -1854,54 +1857,54 @@ class RedBotCogLogscan(commands.Cog):
                     extraction_started = True
                 continue
 
-            # once started, stop on special hard stops you already had
+            # Hard-stop guards that always end capture
             if "Config Warning: " in line:
                 mylogger.info(f"****break on config warning at line {lineno}")
                 break
-
             if "Initializing cache database at" in line:
                 mylogger.info(f"****break on cache database at line {lineno}")
                 break
 
             m = tag_re.match(line)
             if not m:
-                # the moment the tag stops matching [config.py:###], we stop
+                # Tag no longer matches the expected [config.py:###] pattern
                 mylogger.info(f"****break: tag no longer matches [config.py:###] at line {lineno}")
                 break
 
-            tag = (m.group("file"), m.group("lineno"))
+            file_name = m.group("file")
+            body = m.group("body")
 
-            if current_tag is None:
-                current_tag = tag
-                mylogger.debug(f"****config capture started with tag {current_tag} at line {lineno}")
-            else:
-                # if file/lineno tuple changes, stop extraction
-                if tag != current_tag:
-                    mylogger.info(
-                        f"****break: tag changed from {current_tag} to {tag} at line {lineno}"
-                    )
-                    break
+            # If we ever leave config.py, stop (keeps extraction tightly scoped)
+            if current_file is None:
+                current_file = file_name  # expect 'config.py'
+                mylogger.debug(f"config capture started with tag ({current_file}) at line {lineno}")
+            elif file_name != "config.py":
+                mylogger.info(
+                    f"****break: file changed from {current_file} to {file_name} at line {lineno}"
+                )
+                break
 
-            # Strip everything up to (and including) the first pipe, keep the right side as the YAML line.
-            # If no pipe, keep the rest of the line after the matched tag block.
-            after = line[m.end():]  # text after the matched tag block
-            # If there's a leading '|' and maybe a space, trim it
-            after = after.lstrip()
-            if after.startswith("|"):
-                after = after[1:].lstrip()
+            # Clean the body minimally: trim trailing pipes/spaces only
+            body = body.rstrip(" |")
 
-            extracted_lines.append(after)
+            extracted_lines.append(body)
 
-            # Optional: pick up timeout while we're here (still on raw; safe)
-            if "timeout: " in after:
+            # Robust timeout parse (handles padding/trailing pipes)
+            tmatch = re.search(r"\btimeout:\s*(\d+)\b", body)
+            if tmatch:
                 try:
-                    timeout_value = after.split("timeout: ", 1)[1].strip()
-                    self.plex_timeout = int(timeout_value)
+                    self.plex_timeout = int(tmatch.group(1))
                     mylogger.info(f"plex_timeout:{self.plex_timeout} (line {lineno})")
-                except Exception as e:
+                except ValueError as e:
                     mylogger.warning(f"Failed to parse timeout on line {lineno}: {e}")
 
-        # Your prior logic to drop the last line if needed
+            if len(extracted_lines) >= MAX_CAPTURE_LINES:
+                mylogger.warning(
+                    f"****break: reached MAX_CAPTURE_LINES={MAX_CAPTURE_LINES} at line {lineno}"
+                )
+                break
+
+        # Preserve your original behavior: drop the last line if there are 2+ lines
         if len(extracted_lines) > 1:
             extracted_lines = extracted_lines[:-1]
 
