@@ -1834,15 +1834,15 @@ class RedBotCogLogscan(commands.Cog):
             if extraction_started:
                 # Config Warning at the start of the line means we're done
                 if "Config Warning: " in line:
-                    # mylogger.info(f"****break on config warning")
+                    mylogger.info(f"****break on config warning")
                     break
                 # Check for the global divider condition
                 if line.count(global_divider) >= 10:
-                    # mylogger.info(f"****break on global divider")
+                    mylogger.info(f"****break on global divider")
                     break
                 # Check for "Initializing cache database at" condition
                 if "Initializing cache database at" in line:
-                    # mylogger.info(f"****break on cache database")
+                    mylogger.info(f"****break on cache database")
                     break
 
                 extracted_lines.append(line)
@@ -1851,13 +1851,13 @@ class RedBotCogLogscan(commands.Cog):
                 if "timeout: " in line:
                     timeout_value = line.split("timeout: ")[1].strip()
                     self.plex_timeout = int(timeout_value)
-                    # mylogger.info(f"plex_timeout:{self.plex_timeout}")
+                    mylogger.info(f"plex_timeout:{self.plex_timeout}")
 
         total_lines = len(extracted_lines)
         if total_lines > 1:  # Ensure there are at least 2 lines to process
             extracted_lines = extracted_lines[:-1]
 
-        # mylogger.info(f"*******extracted_lines**********: {extracted_lines}")
+        mylogger.info(f"*******extracted_lines**********: {extracted_lines}")
         return extracted_lines
 
     def clean_extracted_content(self, content):
