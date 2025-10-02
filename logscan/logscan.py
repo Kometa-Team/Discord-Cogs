@@ -1801,8 +1801,6 @@ class RedBotCogLogscan(commands.Cog):
 
         return server_info, all_lines
 
-    # --- keep indentation from logs ---
-    # 1) RAW extractor that preserves leading spaces after the "|"
     def extract_config_lines_from_raw(self, raw_content: str):
         extraction_started = False
         extracted_lines = []
@@ -1862,17 +1860,16 @@ class RedBotCogLogscan(commands.Cog):
             extracted_lines = extracted_lines[:-1]
         return extracted_lines
 
-    # 2) Safe cleaner (optional). DO NOT left-trim.
     def clean_extracted_content(self, content: str) -> str:
         return "\n".join(line.rstrip(" |") for line in content.splitlines())
 
-    # 3) Do NOT left-trim before parsing/schema-validating
     def extract_config(self, content):
         raw = getattr(self, "_raw_content", None) or content
         lines = self.extract_config_lines_from_raw(raw)
         if not lines:
             return None, None, None
         yaml_text = "\n".join(lines)  # keep original indentation
+        yaml_text = self.strip_one_leading_space_each_line(yaml_text)
         return self.parse_yaml_from_content(yaml_text)
 
     def extract_config_schema(self, content):
@@ -1881,12 +1878,12 @@ class RedBotCogLogscan(commands.Cog):
         if not lines:
             return None, None, None
         yaml_text = "\n".join(lines)  # keep original indentation
+        yaml_text = self.strip_one_leading_space_each_line(yaml_text)
         return self.parse_yaml_schema_from_content(yaml_text)
-    
-    def clean_extracted_content(self, content):
-        # Remove one leading space from each line
-        cleaned_lines = [line[1:] if line.startswith(" ") else line for line in content.splitlines()]
-        return "\n".join(cleaned_lines)
+
+    def strip_one_leading_space_each_line(self, text: str) -> str:
+        # removes exactly one leading SPACE per line, if present
+        return "\n".join(s[1:] if s.startswith(" ") else s for s in text.splitlines())
 
     def validate_against_schema(self, yaml_content, schema):
         """
