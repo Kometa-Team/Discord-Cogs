@@ -16,6 +16,13 @@ ALLOWED_ROLE_IDS = {
     981499667722424390,  # Kometa Apprentices
 }
 
+# ---------------- Your Sponsor role (guild role for supporters) ------------
+SPONSOR_ROLE_ID = 862041125706268702  # "Sponsor" role in your server
+
+# Optional: map Discord user IDs -> GitHub usernames if names don't match
+# e.g., GH_USERNAME_MAP = { 123456789012345678: "octocat", ... }
+GH_USERNAME_MAP: dict[int, str] = {}
+
 # ---------------- Target GitHub (sponsorable) ----------------
 SPONSORABLE = "meisnate12"
 SPONSORS_URL_FMT = "https://github.com/sponsors/{sponsorable}"
@@ -30,7 +37,7 @@ PAST_COUNT_RE = re.compile(r"Past\s+sponsors\s+(\d+)", re.IGNORECASE)
 
 
 class SponsorCheck(commands.Cog):
-    """Check if a GitHub user is a current or past *public* sponsor and list/inspect public sponsors."""
+    """Check GitHub public sponsors; list/inspect sponsors; verify against server role."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -61,8 +68,7 @@ class SponsorCheck(commands.Cog):
             return True
 
         mylogger.info(
-            f"Access denied for {author_name}. Required any of {list(ALLOWED_ROLE_IDS)}, "
-            f"user_roles={list(user_role_ids)}"
+            f"Access denied. Needs any of {list(ALLOWED_ROLE_IDS)}; user_roles={list(user_role_ids)}"
         )
         return False
 
@@ -82,8 +88,8 @@ class SponsorCheck(commands.Cog):
 
         url = SPONSORS_URL_FMT.format(sponsorable=SPONSORABLE)
         self._typing_safely(ctx)
-
         mylogger.debug(f"Fetching sponsors page: {url}")
+
         try:
             html = await self._fetch(url)
             mylogger.debug(f"Fetched sponsors page OK (len={len(html)})")
@@ -147,16 +153,13 @@ class SponsorCheck(commands.Cog):
     @commands.guild_only()
     async def sponsorlist(self, ctx: commands.Context, which: str = "both", limit: int = 30):
         """
-        List public sponsors (names only) from the visible page.
+        List public sponsors (usernames) from the visible page.
 
         Usage:
           [p]sponsorlist                -> both (up to 30 each)
-          [p]sponsorlist current 50     -> current only (50 max to avoid spam)
+          [p]sponsorlist current 50     -> current only (50)
           [p]sponsorlist past 20        -> past only (20)
           [p]sponsorlist both 15        -> both, 15 each
-
-        Note: Only the sponsors visible on the public page HTML are listed.
-        (The page's "Show more" button uses JS; dates are not publicly shown.)
         """
         which = which.lower()
         limit = max(1, min(100, limit))  # clamp
@@ -188,15 +191,160 @@ class SponsorCheck(commands.Cog):
         await ctx.send(
             f"Public sponsors for **{SPONSORABLE}** (from visible page):\n" + "\n".join(lines) + f"\n<{url}>")
 
+    # ---------- Report: verify server role against public list ----------
+    @commands.command(name="sponsorreport")
+    @commands.guild_only()
+    async def sponsorreport(self, ctx: commands.Context, which: str = "current", limit: int = 100):
+        """
+        Cross-check guild members with the 'Sponsor' role against the public sponsor list.
+
+        Usage:
+          [p]sponsorreport              -> compare 'current' (default)
+          [p]sponsorreport past         -> compare against public past sponsors
+          [p]sponsorreport both         -> compare against current+past (union)
+          [p]sponsorreport current 200  -> raise display cap (1..500)
+
+        Notes:
+        - Only *public* sponsors appear on the page (private sponsors won't).
+        - Discord names often != GitHub usernames; we try a few heuristics and
+          allow a hard-coded override via GH_USERNAME_MAP.
+        """
+        which = which.lower()
+        limit = max(1, min(500, limit))
+
+        role = ctx.guild.get_role(SPONSOR_ROLE_ID)
+        if not role:
+            mylogger.error(f"Sponsor role id {SPONSOR_ROLE_ID} not found in guild.")
+            return await ctx.send(f"⚠️ Sponsor role not found (ID `{SPONSOR_ROLE_ID}`).")
+
+        url = SPONSORS_URL_FMT.format(sponsorable=SPONSORABLE)
+        self._typing_safely(ctx)
+
+        try:
+            html = await self._fetch(url)
+        except Exception as e:
+            mylogger.error(f"Error fetching sponsors page: {e}")
+            return await ctx.send(f"⚠️ Could not reach GitHub Sponsors page: `{e}`")
+
+        html_current, html_past = self._split_sections(html)
+        current_set = {u.lower() for u in self._extract_usernames(html_current)}
+        past_set = {u.lower() for u in self._extract_usernames(html_past)}
+
+        if which == "current":
+            ref_set = current_set
+        elif which == "past":
+            ref_set = past_set
+        elif which == "both":
+            ref_set = current_set | past_set
+        else:
+            return await ctx.send("Please use `current`, `past`, or `both`.")
+
+        # Build report
+        matched = []  # (member, matched_user)
+        unmatched = []  # member (could be private or mismatch)
+        ref_only = []  # usernames on page not represented by any member
+
+        # Precompute a lowercase set of candidate names for quick lookups
+        guild_members = list(role.members)
+        mylogger.info(f"sponsorreport {which}: role='{role.name}' members={len(guild_members)} ref={len(ref_set)}")
+
+        # For quick reverse matching: map GH user -> list of members who match (by heuristic)
+        matched_any = set()
+
+        for m in guild_members:
+            gh_user = GH_USERNAME_MAP.get(m.id)
+            candidates = self._candidate_gh_usernames(m, override=gh_user)
+            hit = next((c for c in candidates if c in ref_set), None)
+            if hit:
+                matched.append((m, hit))
+                matched_any.add(hit)
+            else:
+                unmatched.append(m)
+
+        # Refs that didn't match any member
+        ref_only = sorted([u for u in ref_set if u not in matched_any])
+
+        # Compose response
+        def fmt_member(x):
+            return f"{x.display_name} (`{x.id}`)"
+
+        lines = []
+        lines.append(f"**Sponsor role:** {role.mention}  —  **Members:** {len(guild_members)}")
+        if which == "both":
+            lines.append(f"**Public sponsors (union current/past):** {len(ref_set)}")
+        else:
+            lines.append(f"**Public {which} sponsors:** {len(ref_set)}")
+        lines.append("")
+
+        if matched:
+            head = "\n".join([f"- {fmt_member(m)} → **{u}**" for m, u in matched[:limit]])
+            more = "" if len(matched) <= limit else f"\n…and {len(matched) - limit} more"
+            lines.append(f"**Matched (server ↔ public): {len(matched)}**\n{head}{more}\n")
+        else:
+            lines.append("**Matched (server ↔ public): 0**\n")
+
+        if unmatched:
+            head = "\n".join([f"- {fmt_member(m)}" for m in unmatched[:limit]])
+            more = "" if len(unmatched) <= limit else f"\n…and {len(unmatched) - limit} more"
+            lines.append(
+                f"**Unmatched in public list (could be private sponsors or name mismatch): {len(unmatched)}**\n{head}{more}\n")
+        else:
+            lines.append("**Unmatched in public list:** 0\n")
+
+        if ref_only:
+            head = ", ".join(ref_only[:limit])
+            more = "" if len(ref_only) <= limit else f"\n…and {len(ref_only) - limit} more"
+            lines.append(f"**On public page but no matching member:** {len(ref_only)}\n{head}{more}\n")
+        else:
+            lines.append("**On public page but no matching member:** 0\n")
+
+        lines.append(f"<{url}>")
+        await ctx.send("\n".join(lines))
+
     # ---------------- Helpers ----------------
+
+    def _candidate_gh_usernames(self, member, override: str | None) -> list[str]:
+        """
+        Return candidate GitHub usernames for a Discord member.
+        Order matters (first hit wins).
+        """
+        cands: list[str] = []
+        if override:
+            cands.append(self._norm(override))
+
+        # Try display_name and username as is (common case when they match GH)
+        cands.append(self._norm(member.display_name))
+        cands.append(self._norm(member.name))
+
+        # Heuristic: if display name looks like "Name | ghuser" or "Name - ghuser"
+        for sep in ("|", "·", "-", "—", ":", "/"):
+            if sep in member.display_name:
+                trailing = member.display_name.split(sep)[-1]
+                cands.append(self._norm(trailing))
+
+        # Dedup while preserving order
+        seen = set()
+        out = []
+        for x in cands:
+            if x and x not in seen:
+                out.append(x)
+                seen.add(x)
+        mylogger.debug(f"Candidates for {member} -> {out}")
+        return out
+
+    @staticmethod
+    def _norm(s: str | None) -> str:
+        if not s:
+            return ""
+        s = s.strip().lstrip("@").lower()
+        # keep alnum and dash only (GH allows hyphen)
+        return "".join(ch for ch in s if ch.isalnum() or ch == "-")
 
     def _typing_safely(self, ctx: commands.Context) -> None:
         try:
             if hasattr(ctx.channel, "trigger_typing"):
-                # discord.py 1.x
                 self.bot.loop.create_task(ctx.channel.trigger_typing())
             else:
-                # fallback to context manager if available
                 typing_cm = getattr(ctx, "typing", None)
                 if callable(typing_cm):
                     self.bot.loop.create_task(self._typing_cm(ctx))
