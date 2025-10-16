@@ -1,21 +1,26 @@
 from __future__ import annotations
 
-from redbot.core import commands
-import aiohttp
+import logging
 import re
+import aiohttp
+from redbot.core import commands
 
-# ===== Configure allowed roles (by ID) =====
+# ---------------- Logging (mimics your validate cog pattern) ----------------
+mylogger = logging.getLogger("sponsorcheck")
+mylogger.setLevel(logging.DEBUG)
+
+# ---------------- Config: Allowed roles (by ID) ----------------
 ALLOWED_ROLE_IDS = {
     929756550380286153,  # Moderator
     929900016531828797,  # Kometa Masters
     981499667722424390,  # Kometa Apprentices
 }
 
-# ===== Target GitHub account (sponsorable) =====
+# ---------------- Target GitHub (sponsorable) ----------------
 SPONSORABLE = "meisnate12"
 SPONSORS_URL_FMT = "https://github.com/sponsors/{sponsorable}"
 
-# Precompiled regex to extract usernames from alt="@username"
+# Extract usernames from avatar img tags: alt="@username"
 ALT_USER_RE = re.compile(r'alt="@([A-Za-z0-9-]{1,39})"')
 # Conservative fallback for anchors like href="/username"
 HREF_USER_RE = re.compile(r'href="/([A-Za-z0-9-]{1,39})"')
@@ -30,10 +35,33 @@ class SponsorCheck(commands.Cog):
     # Gate ALL commands in this cog by allowed roles (guild only)
     async def cog_check(self, ctx: commands.Context) -> bool:
         if not ctx.guild:
-            return False  # disallow in DMs
+            mylogger.info("Blocked: command used in DM.")
+            return False
+
+        author_name = f"{ctx.author.name}#{ctx.author.discriminator}" if ctx.author else "Unknown"
+        guild_name = ctx.guild.name if ctx.guild else "Direct Message"
+        channel_name = ctx.channel.name if hasattr(ctx.channel, "name") else "Direct Message"
+        mylogger.info(
+            f"SponsorCheck invoked by {author_name} in {guild_name}/{channel_name} "
+            f"(IDs: {ctx.guild.id if ctx.guild else 'N/A'}/{ctx.channel.id if ctx.guild else 'N/A'})"
+        )
+
         user_role_ids = {r.id for r in ctx.author.roles}
-        # allow if user has any allowed role OR has Manage Guild (fallback)
-        return bool(ALLOWED_ROLE_IDS & user_role_ids) or ctx.author.guild_permissions.manage_guild
+        has_allowed = bool(ALLOWED_ROLE_IDS & user_role_ids)
+        has_manage_guild = ctx.author.guild_permissions.manage_guild
+
+        if has_allowed or has_manage_guild:
+            mylogger.debug(
+                f"Access granted: has_allowed={has_allowed}, manage_guild={has_manage_guild}, "
+                f"user_roles={list(user_role_ids)}"
+            )
+            return True
+
+        mylogger.info(
+            f"Access denied for {author_name}. Required any of {list(ALLOWED_ROLE_IDS)}, "
+            f"user_roles={list(user_role_ids)}"
+        )
+        return False
 
     @commands.command(name="sponsor")
     @commands.guild_only()
@@ -45,21 +73,26 @@ class SponsorCheck(commands.Cog):
         """
         target = username.lstrip("@").strip()
         if not target:
+            mylogger.info("No username provided to sponsor command.")
             return await ctx.send("Please provide a GitHub username, e.g. `[p]sponsor bullmoose20`.")
 
         url = SPONSORS_URL_FMT.format(sponsorable=SPONSORABLE)
         await ctx.trigger_typing()
+        mylogger.debug(f"Fetching sponsors page: {url}")
 
         try:
             html = await self._fetch(url)
+            mylogger.debug(f"Fetched sponsors page OK (len={len(html)})")
         except Exception as e:
+            mylogger.error(f"Error fetching sponsors page: {e}")
             return await ctx.send(f"⚠️ Could not reach GitHub Sponsors page: `{e}`")
 
-        # Find section markers (best effort; headings can vary slightly)
+        # Locate section markers (best effort)
         idx_current = self._find_any(html, ["Current sponsors", "Current Sponsors"])
         idx_past = self._find_any(html, ["Past sponsors", "Past Sponsors"])
+        mylogger.debug(f"Section indices: current={idx_current}, past={idx_past}")
 
-        # Split into current and past segments if markers exist
+        # Slice sections
         if idx_current != -1 and idx_past != -1:
             if idx_current < idx_past:
                 html_current = html[idx_current:idx_past]
@@ -74,31 +107,35 @@ class SponsorCheck(commands.Cog):
             html_current = ""
             html_past = html[idx_past:]
         else:
-            # Fallback: treat entire page as "unknown/current"
             html_current = html
             html_past = ""
 
-        current_users = self._extract_usernames(html_current)
-        past_users = self._extract_usernames(html_past)
+        current_users = {u.lower() for u in self._extract_usernames(html_current)}
+        past_users = {u.lower() for u in self._extract_usernames(html_past)}
+        mylogger.debug(
+            f"Extracted users: current={len(current_users)} past={len(past_users)} "
+            f"(sample current: {list(current_users)[:5]}) (sample past: {list(past_users)[:5]})"
+        )
 
         t_low = target.lower()
-        current_users = {u.lower() for u in current_users}
-        past_users = {u.lower() for u in past_users}
-
         if t_low in current_users:
+            mylogger.info(f"Result: {target} is a CURRENT public sponsor of {SPONSORABLE}.")
             return await ctx.send(
                 f"✅ **{target}** is a **current** public sponsor of **{SPONSORABLE}**.\n<{url}>"
             )
         if t_low in past_users:
+            mylogger.info(f"Result: {target} is a PAST public sponsor of {SPONSORABLE}.")
             return await ctx.send(
                 f"ℹ️ **{target}** is a **past** public sponsor of **{SPONSORABLE}**.\n<{url}>"
             )
+
+        mylogger.info(f"Result: {target} not found as PUBLIC sponsor (private sponsors not visible).")
         return await ctx.send(
             f"❌ **{target}** is not listed as a **public** sponsor of **{SPONSORABLE}**.\n"
             f"(Private sponsors won’t appear on the public page.)\n<{url}>"
         )
 
-    # ---------- helpers ----------
+    # ---------------- Helpers ----------------
 
     async def _fetch(self, url: str) -> str:
         timeout = aiohttp.ClientTimeout(total=15)
@@ -114,15 +151,16 @@ class SponsorCheck(commands.Cog):
     def _extract_usernames(self, html: str) -> set[str]:
         users = set(ALT_USER_RE.findall(html))
 
-        # Fallback: anchors like href="/username" (filter obvious non-user paths)
+        # Fallback via href="/username" (filter out non-user paths)
         link_users = set(HREF_USER_RE.findall(html))
         banned = {
             "sponsors", "orgs", "login", "notifications", "settings",
-            "enterprise", "topics", "about", "pricing"
+            "enterprise", "topics", "about", "pricing", "apps", "marketplace"
         }
-        link_users = {u for u in link_users if u not in banned}
+        link_users = {u for u in link_users if u not in banned and not u.startswith("#")}
+        users |= link_users
 
-        return users.union(link_users)
+        return users
 
     @staticmethod
     def _find_any(haystack: str, needles: list[str]) -> int:
