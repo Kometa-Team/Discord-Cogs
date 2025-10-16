@@ -35,6 +35,10 @@ ALT_USER_RE = re.compile(r'alt="@([A-Za-z0-9-]{1,39})"')
 # Conservative fallback for anchors like href="/username"
 HREF_USER_RE = re.compile(r'href="/([A-Za-z0-9-]{1,39})"')
 
+# Badge counts like "Current sponsors 66" / "Past sponsors 206" (mobile/desktop)
+CURRENT_COUNT_RE = re.compile(r"Current\s*sponsors[^\d]*([0-9,]+)", re.IGNORECASE)
+PAST_COUNT_RE = re.compile(r"Past\s*sponsors[^\d]*([0-9,]+)", re.IGNORECASE)
+
 # Separators we treat as "Name SEP ghuser" → take last segment as candidate
 SEP_CHARS = ("|", "·", "-", "—", ":", "/")
 
@@ -82,7 +86,9 @@ class SponsorCheck(commands.Cog):
     async def sponsor(self, ctx: commands.Context, username: str):
         """
         Check if <username> appears as a **public** sponsor of the target (current or past).
-        Usage: [p]sponsor <github-username>
+        If not found, tries to resolve by matching a Sponsor-role member's Kometa Server Name (display name)
+        to the provided string, then uses that member's Discord username (and variants).
+        Usage: [p]sponsor <github-username or Kometa server name>
         """
         target = username.lstrip("@").strip()
         if not target:
@@ -98,21 +104,42 @@ class SponsorCheck(commands.Cog):
             mylogger.error(f"Error fetching sponsors page: {e}")
             return await ctx.send(f"⚠️ Could not reach GitHub Sponsors page: `{e}`")
 
-        # union of current & past
-        curr, past = self._split_sections(html)
-        current = {u.lower() for u in self._extract_usernames(curr)}
-        previous = {u.lower() for u in self._extract_usernames(past)}
-        both = current | previous
+        # Build union sets
+        curr_html, past_html = self._split_sections(html)
+        current_set = {u.lower() for u in self._extract_usernames(curr_html)}
+        past_set = {u.lower() for u in self._extract_usernames(past_html)}
+        union_set = current_set | past_set
 
+        # 1) direct GH username match
         t = target.lower()
-        if t in both:
-            status = "current" if t in current else "past"
+        if t in union_set:
+            status = "current" if t in current_set else "past"
             return await self._send_report(ctx, [
                 f"✅ **{target}** is a **{status}** public sponsor of **{SPONSORABLE}**.",
                 "(Note: private sponsors are not shown on the public page.)",
                 f"<{url}>",
             ])
 
+        # 2) KSN→DSN resolution via Sponsor role (covers bullmoose → bullmoose20)
+        role = ctx.guild.get_role(SPONSOR_ROLE_ID)
+        if role:
+            # Find a member whose display name equals the provided target (case-insensitive)
+            m = next((mem for mem in role.members if (mem.display_name or "").strip().lower() == t), None)
+            if m:
+                ksn = (m.display_name or "").strip()
+                dsn = (m.name or "").strip()
+                override = GH_USERNAME_MAP.get(m.id)
+                candidates = self._gh_candidates_from_names(ksn, dsn, override)
+                hit = next((c for c in candidates if c in union_set), None)
+                if hit:
+                    status = "current" if hit in current_set else "past"
+                    return await self._send_report(ctx, [
+                        f"✅ **{ksn}** resolved via Discord → GH as **{dsn}** → **{status}** public sponsor of **{SPONSORABLE}**.",
+                        "(Resolved from Kometa server name; note: private sponsors are not shown on the public page.)",
+                        f"<{url}>",
+                    ])
+
+        # Not found
         return await self._send_report(ctx, [
             f"❌ **{target}** is not listed as a **public** sponsor of **{SPONSORABLE}** (current or past).",
             "Only the sponsorable can verify private sponsors.",
@@ -121,12 +148,11 @@ class SponsorCheck(commands.Cog):
 
     @commands.command(name="sponsorlist")
     @commands.guild_only()
-    async def sponsorlist(self, ctx: commands.Context, limit: int = 30):
+    async def sponsorlist(self, ctx: commands.Context):
         """
-        List visible **public** sponsors from the page (current & past).
-        Usage: [p]sponsorlist [limit]
+        List **all visible** public sponsors from the page (current & past), and show private counts.
+        Usage: [p]sponsorlist
         """
-        limit = max(1, min(100, limit))
         url = SPONSORS_URL_FMT.format(sponsorable=SPONSORABLE)
         self._typing_safely(ctx)
 
@@ -137,35 +163,38 @@ class SponsorCheck(commands.Cog):
             return await ctx.send(f"⚠️ Could not reach GitHub Sponsors page: `{e}`")
 
         curr_html, past_html = self._split_sections(html)
-        current = self._extract_usernames(curr_html)
-        previous = self._extract_usernames(past_html)
+        current_public = self._extract_usernames(curr_html)
+        past_public = self._extract_usernames(past_html)
+
+        current_total = self._extract_total(html, CURRENT_COUNT_RE) or len(current_public)
+        past_total = self._extract_total(html, PAST_COUNT_RE) or len(past_public)
+
+        current_private = max(0, current_total - len(current_public))
+        past_private = max(0, past_total - len(past_public))
 
         lines = [
             f"**Public sponsors for {SPONSORABLE}** (from visible page):",
-            f"- Current sponsors: **{len(current)}**",
-            f"- Past sponsors: **{len(previous)}**",
+            f"- Current sponsors: **{current_total}**  (public: **{len(current_public)}**, private: **{current_private}**)",
+            f"- Past sponsors: **{past_total}**  (public: **{len(past_public)}**, private: **{past_private}**)",
             "",
-            f"**Current** (up to {limit}): {', '.join(current[:limit]) if current else '—'}",
-            f"**Past** (up to {limit}): {', '.join(previous[:limit]) if previous else '—'}",
-            "",
-            "Only the sponsorable can verify private sponsors.",
-            f"<{url}>",
+            "**Current (public usernames):**",
         ]
+        lines += [", ".join(current_public)] if current_public else ["—"]
+        lines += ["", "**Past (public usernames):**"]
+        lines += [", ".join(past_public)] if past_public else ["—"]
+        lines += ["", "Only the sponsorable can verify private sponsors.", f"<{url}>"]
+
         await self._send_report(ctx, lines)
 
     @commands.command(name="sponsorreport")
     @commands.guild_only()
-    async def sponsorreport(self, ctx: commands.Context, limit: int = 500):
+    async def sponsorreport(self, ctx: commands.Context, limit: int = 2000):
         """
         Cross-check guild members with the 'Sponsor' role against **public** sponsors (current ∪ past).
-        Prints:
-          **Matched (server ↔ public):**
-          - DisplayName (`DiscordID`) → **DiscordUsername**
-          **Unmatched in public list (likely private or name mismatch):**
-          - DisplayName (`DiscordID`)
-        Usage: [p]sponsorreport [limit]
+        Includes public/private counts derived from the page and matched/unmatched lists.
+        Usage: [p]sponsorreport [limit-to-print]
         """
-        limit = max(1, min(2000, limit))  # only affects how many lines we PRINT
+        limit = max(1, min(5000, limit))  # print limiter only
 
         role = ctx.guild.get_role(SPONSOR_ROLE_ID)
         if not role:
@@ -181,30 +210,37 @@ class SponsorCheck(commands.Cog):
             mylogger.error(f"Error fetching sponsors page: {e}")
             return await ctx.send(f"⚠️ Could not reach GitHub Sponsors page: `{e}`")
 
-        # Build current/past and union; keep case map if we ever want pretty GH casing later
+        # Current/past public names
         curr_html, past_html = self._split_sections(html)
-        current_list = self._extract_usernames(curr_html)
-        past_list = self._extract_usernames(past_html)
-        current_set = {u.lower() for u in current_list}
-        past_set = {u.lower() for u in past_list}
+        current_public = self._extract_usernames(curr_html)
+        past_public = self._extract_usernames(past_html)
+        current_set = {u.lower() for u in current_public}
+        past_set = {u.lower() for u in past_public}
         union_set = current_set | past_set
+
+        # Totals from badges (fallback to len(public) if not found)
+        current_total = self._extract_total(html, CURRENT_COUNT_RE) or len(current_public)
+        past_total = self._extract_total(html, PAST_COUNT_RE) or len(past_public)
+        current_private = max(0, current_total - len(current_public))
+        past_private = max(0, past_total - len(past_public))
 
         members = list(role.members)
         mylogger.info(
             f"sponsorreport: role='{role.name}' members={len(members)} "
-            f"current={len(current_set)} past={len(past_set)} union={len(union_set)} (print limit={limit})"
+            f"current_total={current_total} past_total={past_total} "
+            f"current_public={len(current_public)} past_public={len(past_public)} "
+            f"current_private={current_private} past_private={past_private} union={len(union_set)} (print limit={limit})"
         )
 
         matched_lines: list[str] = []
         unmatched_lines: list[str] = []
+        matched_count = 0
 
         # Match ALL members; limit only affects printing
-        matched_count = 0
         for m in members:
             ksn = (m.display_name or "").strip()
             dsn = (m.name or "").strip()  # Discord username
             override = GH_USERNAME_MAP.get(m.id)
-
             candidates = self._gh_candidates_from_names(ksn, dsn, override)
             hit = next((c for c in candidates if c in union_set), None)
 
@@ -214,25 +250,25 @@ class SponsorCheck(commands.Cog):
             else:
                 unmatched_lines.append(f"- {ksn or '—'} (`{m.id}`)")
 
-        # Counts block
-        private_estimate = max(0, len(members) - matched_count)  # unmatched ≈ private/mismatch
+        # Estimated private/mismatch on Discord side
+        private_estimate = max(0, len(members) - matched_count)
+
         header = [
-            f"**Current GH public sponsors:** {len(current_set)}",
-            f"**Past GH public sponsors:** {len(past_set)}",
+            f"**Current GH sponsors:** total **{current_total}**  (public **{len(current_public)}**, private **{current_private}**)",
+            f"**Past GH sponsors:** total **{past_total}**  (public **{len(past_public)}**, private **{past_private}**)",
+            f"**Public union (current ∪ past):** {len(union_set)}",
             f"**Discord users with Sponsor role:** {len(members)}",
             f"**Matched (server ↔ public):** {matched_count}",
-            f"**Unmatched (likely private or name mismatch):** {private_estimate}",
-            f"**Public union (current ∪ past):** {len(union_set)}",
+            f"**Estimated private/mismatch (Discord role side):** {private_estimate}",
             "",
         ]
 
-        # Body sections (with printing limit)
         body: list[str] = []
         body.append("**Matched (server ↔ public):**")
         body.extend(matched_lines[:limit])
         if len(matched_lines) > limit:
             body.append(f"…and {len(matched_lines) - limit} more")
-        body.append("")  # spacer
+        body.append("")
 
         body.append("**Unmatched in public list (likely private or name mismatch):**")
         body.extend(unmatched_lines[:limit])
@@ -328,7 +364,7 @@ class SponsorCheck(commands.Cog):
 
     def _split_sections(self, html: str) -> tuple[str, str]:
         """
-        Lightweight splitter: try headings; otherwise treat whole page as "current" (union logic still catches all).
+        Try headings; otherwise treat whole page as "current" (union logic still catches all).
         """
         idx_current = self._find_any(html, ["Current sponsors", "Current Sponsors"])
         idx_past = self._find_any(html, ["Past sponsors", "Past Sponsors"])
@@ -357,6 +393,17 @@ class SponsorCheck(commands.Cog):
         link_users = {u for u in link_users if u not in banned and not u.startswith("#")}
         users |= link_users
         return sorted(users, key=str.lower)
+
+    @staticmethod
+    def _extract_total(html: str, regex: re.Pattern) -> int | None:
+        m = regex.search(html or "")
+        if not m:
+            return None
+        try:
+            # strip commas just in case “1,234”
+            return int(m.group(1).replace(",", ""))
+        except Exception:
+            return None
 
     @staticmethod
     def _find_any(haystack: str, needles: list[str]) -> int:
