@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import logging
 import re
+from io import BytesIO
+
 import aiohttp
+import discord
 from redbot.core import commands
 
 # ---------------- Logging (mimics your validate cog pattern) ----------------
@@ -37,12 +40,12 @@ PAST_COUNT_RE = re.compile(r"Past\s+sponsors\s+(\d+)", re.IGNORECASE)
 
 
 class SponsorCheck(commands.Cog):
-    """Check GitHub public sponsors; list/inspect sponsors; verify against server role."""
+    """GitHub sponsors tools: check/list public sponsors and verify against a server Sponsor role."""
 
     def __init__(self, bot):
         self.bot = bot
 
-    # Gate ALL commands in this cog by allowed roles (guild only)
+    # ---------------- Gate ALL commands in this cog by allowed roles ---------------
     async def cog_check(self, ctx: commands.Context) -> bool:
         if not ctx.guild:
             mylogger.info("Blocked: command used in DM.")
@@ -72,13 +75,13 @@ class SponsorCheck(commands.Cog):
         )
         return False
 
-    # ---------- Primary: single-user check ----------
+    # ---------------- Commands ----------------
+
     @commands.command(name="sponsor")
     @commands.guild_only()
     async def sponsor(self, ctx: commands.Context, username: str):
         """
         Check if <username> is a public sponsor of the target (default: meisnate12).
-
         Usage: [p]sponsor <github-username>
         """
         target = username.lstrip("@").strip()
@@ -109,22 +112,24 @@ class SponsorCheck(commands.Cog):
         t_low = target.lower()
         if t_low in current_users:
             mylogger.info(f"Result: {target} is a CURRENT public sponsor of {SPONSORABLE}.")
-            return await ctx.send(
-                f"✅ **{target}** is a **current** public sponsor of **{SPONSORABLE}**.\n<{url}>"
-            )
+            return await self._send_report(ctx, [
+                f"✅ **{target}** is a **current** public sponsor of **{SPONSORABLE}**.",
+                f"<{url}>",
+            ])
         if t_low in past_users:
             mylogger.info(f"Result: {target} is a PAST public sponsor of {SPONSORABLE}.")
-            return await ctx.send(
-                f"ℹ️ **{target}** is a **past** public sponsor of **{SPONSORABLE}**.\n<{url}>"
-            )
+            return await self._send_report(ctx, [
+                f"ℹ️ **{target}** is a **past** public sponsor of **{SPONSORABLE}**.",
+                f"<{url}>",
+            ])
 
         mylogger.info(f"Result: {target} not found as PUBLIC sponsor (private sponsors not visible).")
-        return await ctx.send(
-            f"❌ **{target}** is not listed as a **public** sponsor of **{SPONSORABLE}**.\n"
-            f"(Private sponsors won’t appear on the public page.)\n<{url}>"
-        )
+        return await self._send_report(ctx, [
+            f"❌ **{target}** is not listed as a **public** sponsor of **{SPONSORABLE}**.",
+            "(Private sponsors won’t appear on the public page.)",
+            f"<{url}>",
+        ])
 
-    # ---------- Counts ----------
     @commands.command(name="sponsorcount")
     @commands.guild_only()
     async def sponsorcount(self, ctx: commands.Context):
@@ -142,13 +147,13 @@ class SponsorCheck(commands.Cog):
         past_count = self._extract_count(html, PAST_COUNT_RE)
 
         mylogger.info(f"Counts: current={current_count} past={past_count}")
-        await ctx.send(
-            f"**{SPONSORABLE}** sponsors (public page):\n"
-            f"- Current: **{current_count}**\n"
-            f"- Past: **{past_count}**\n<{url}>"
-        )
+        await self._send_report(ctx, [
+            f"**{SPONSORABLE}** sponsors (public page):",
+            f"- Current: **{current_count}**",
+            f"- Past: **{past_count}**",
+            f"<{url}>",
+        ])
 
-    # ---------- List ----------
     @commands.command(name="sponsorlist")
     @commands.guild_only()
     async def sponsorlist(self, ctx: commands.Context, which: str = "both", limit: int = 30):
@@ -177,7 +182,7 @@ class SponsorCheck(commands.Cog):
         current_users = sorted(self._extract_usernames(html_current))
         past_users = sorted(self._extract_usernames(html_past))
 
-        lines = []
+        lines = [f"Public sponsors for **{SPONSORABLE}** (from visible page):"]
         if which in ("current", "both"):
             chunk = ", ".join(current_users[:limit]) if current_users else "—"
             lines.append(f"**Current** ({len(current_users)} shown): {chunk}")
@@ -186,12 +191,11 @@ class SponsorCheck(commands.Cog):
             lines.append(f"**Past** ({len(past_users)} shown): {chunk}")
         if which not in ("current", "past", "both"):
             return await ctx.send("Please use `current`, `past`, or `both`.")
+        lines.append(f"<{url}>")
 
         mylogger.info(f"sponsorlist {which} limit={limit} -> currents={len(current_users)} pasts={len(past_users)}")
-        await ctx.send(
-            f"Public sponsors for **{SPONSORABLE}** (from visible page):\n" + "\n".join(lines) + f"\n<{url}>")
+        await self._send_report(ctx, lines)
 
-    # ---------- Report: verify server role against public list ----------
     @commands.command(name="sponsorreport")
     @commands.guild_only()
     async def sponsorreport(self, ctx: commands.Context, which: str = "current", limit: int = 100):
@@ -240,15 +244,13 @@ class SponsorCheck(commands.Cog):
             return await ctx.send("Please use `current`, `past`, or `both`.")
 
         # Build report
-        matched = []  # (member, matched_user)
-        unmatched = []  # member (could be private or mismatch)
-        ref_only = []  # usernames on page not represented by any member
+        matched: list[tuple[discord.Member, str]] = []
+        unmatched: list[discord.Member] = []
+        ref_only: list[str] = []
 
-        # Precompute a lowercase set of candidate names for quick lookups
         guild_members = list(role.members)
         mylogger.info(f"sponsorreport {which}: role='{role.name}' members={len(guild_members)} ref={len(ref_set)}")
 
-        # For quick reverse matching: map GH user -> list of members who match (by heuristic)
         matched_any = set()
 
         for m in guild_members:
@@ -261,49 +263,55 @@ class SponsorCheck(commands.Cog):
             else:
                 unmatched.append(m)
 
-        # Refs that didn't match any member
         ref_only = sorted([u for u in ref_set if u not in matched_any])
 
-        # Compose response
-        def fmt_member(x):
-            return f"{x.display_name} (`{x.id}`)"
+        # Compose lines with chunking protection
+        head = [
+            f"**Sponsor role:** {role.mention}  —  **Members:** {len(guild_members)}",
+            (f"**Public sponsors (union current/past):** {len(ref_set)}"
+             if which == "both" else
+             f"**Public {which} sponsors:** {len(ref_set)}"),
+            ""
+        ]
 
-        lines = []
-        lines.append(f"**Sponsor role:** {role.mention}  —  **Members:** {len(guild_members)}")
-        if which == "both":
-            lines.append(f"**Public sponsors (union current/past):** {len(ref_set)}")
-        else:
-            lines.append(f"**Public {which} sponsors:** {len(ref_set)}")
-        lines.append("")
+        body_lines: list[str] = []
 
         if matched:
-            head = "\n".join([f"- {fmt_member(m)} → **{u}**" for m, u in matched[:limit]])
-            more = "" if len(matched) <= limit else f"\n…and {len(matched) - limit} more"
-            lines.append(f"**Matched (server ↔ public): {len(matched)}**\n{head}{more}\n")
+            body_lines.append(f"**Matched (server ↔ public): {len(matched)}**")
+            body_lines += [f"- {m.display_name} (`{m.id}`) → **{u}**" for m, u in matched[:limit]]
+            if len(matched) > limit:
+                body_lines.append(f"…and {len(matched) - limit} more")
+            body_lines.append("")  # spacer
         else:
-            lines.append("**Matched (server ↔ public): 0**\n")
+            body_lines.append("**Matched (server ↔ public): 0**\n")
 
         if unmatched:
-            head = "\n".join([f"- {fmt_member(m)}" for m in unmatched[:limit]])
-            more = "" if len(unmatched) <= limit else f"\n…and {len(unmatched) - limit} more"
-            lines.append(
-                f"**Unmatched in public list (could be private sponsors or name mismatch): {len(unmatched)}**\n{head}{more}\n")
+            body_lines.append(f"**Unmatched in public list (could be private or name mismatch): {len(unmatched)}**")
+            body_lines += [f"- {m.display_name} (`{m.id}`)" for m in unmatched[:limit]]
+            if len(unmatched) > limit:
+                body_lines.append(f"…and {len(unmatched) - limit} more")
+            body_lines.append("")
         else:
-            lines.append("**Unmatched in public list:** 0\n")
+            body_lines.append("**Unmatched in public list:** 0\n")
 
         if ref_only:
-            head = ", ".join(ref_only[:limit])
-            more = "" if len(ref_only) <= limit else f"\n…and {len(ref_only) - limit} more"
-            lines.append(f"**On public page but no matching member:** {len(ref_only)}\n{head}{more}\n")
+            body_lines.append(f"**On public page but no matching member:** {len(ref_only)}")
+            body_lines.append(", ".join(ref_only[:limit]))
+            if len(ref_only) > limit:
+                body_lines.append(f"…and {len(ref_only) - limit} more")
+            body_lines.append("")
         else:
-            lines.append("**On public page but no matching member:** 0\n")
+            body_lines.append("**On public page but no matching member:** 0\n")
 
-        lines.append(f"<{url}>")
-        await ctx.send("\n".join(lines))
+        body_lines.append(f"<{url}>")
+
+        # Send head and body with protection
+        await self._send_report(ctx, head)
+        await self._send_report(ctx, body_lines)
 
     # ---------------- Helpers ----------------
 
-    def _candidate_gh_usernames(self, member, override: str | None) -> list[str]:
+    def _candidate_gh_usernames(self, member: discord.Member, override: str | None) -> list[str]:
         """
         Return candidate GitHub usernames for a Discord member.
         Order matters (first hit wins).
@@ -329,7 +337,7 @@ class SponsorCheck(commands.Cog):
             if x and x not in seen:
                 out.append(x)
                 seen.add(x)
-        mylogger.debug(f"Candidates for {member} -> {out}")
+        mylogger.debug(f"Candidates for {member.display_name} -> {out}")
         return out
 
     @staticmethod
@@ -343,8 +351,10 @@ class SponsorCheck(commands.Cog):
     def _typing_safely(self, ctx: commands.Context) -> None:
         try:
             if hasattr(ctx.channel, "trigger_typing"):
+                # discord.py 1.x/2.x channel method
                 self.bot.loop.create_task(ctx.channel.trigger_typing())
             else:
+                # fallback context manager
                 typing_cm = getattr(ctx, "typing", None)
                 if callable(typing_cm):
                     self.bot.loop.create_task(self._typing_cm(ctx))
@@ -413,3 +423,54 @@ class SponsorCheck(commands.Cog):
             return int(m.group(1)) if m else 0
         except Exception:
             return 0
+
+    # ---------------- Output protection helpers ----------------
+
+    def _chunk_lines(self, lines: list[str], max_len: int = 1800):
+        """Split text into safe message chunks (aim < 2000 to leave buffer)."""
+        buf = []
+        size = 0
+        for line in lines:
+            if not line.endswith("\n"):
+                line = line + "\n"
+            if size + len(line) > max_len and buf:
+                yield "".join(buf)
+                buf, size = [line], len(line)
+            else:
+                buf.append(line)
+                size += len(line)
+        if buf:
+            yield "".join(buf)
+
+    async def _send_report(self, ctx: commands.Context, lines: list[str], header: str | None = None):
+        """Safely send a possibly-large report: paginate or attach as .txt."""
+        out_lines = []
+        if header:
+            out_lines.append(header)
+            out_lines.append("")
+        out_lines.extend(lines)
+
+        chunks = list(self._chunk_lines(out_lines, max_len=1800))
+        total_len = sum(len(c) for c in chunks)
+
+        # If modest size, send as multiple messages
+        if chunks and total_len <= 3800 and len(chunks) <= 2:
+            for c in chunks:
+                await ctx.send(c)
+            return
+
+        # For larger reports, either send multiple chunks or attach
+        # If too many chunks (spammy), attach as file
+        if len(chunks) > 5 or total_len > 6000:
+            text = "".join(chunks)
+            bio = BytesIO(text.encode("utf-8"))
+            filename = f"sponsorreport_{ctx.guild.id}.txt"
+            await ctx.send(
+                "Report was large; attached as a file:",
+                file=discord.File(bio, filename=filename),
+            )
+            return
+
+        # Else: send the chunks (3–5 chunks)
+        for c in chunks:
+            await ctx.send(c)

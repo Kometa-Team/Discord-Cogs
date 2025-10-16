@@ -1,10 +1,12 @@
 {
   "author": ["Kometa-Team"],
-  "install_msg": "SponsorCheck installed. Use the command to verify if a GitHub user is a public sponsor of the target (default: meisnate12).",
+  "install_msg": "SponsorCheck installed. Use `[p]sponsor <github-username>` to check public current/past sponsorship of meisnate12. See also: `[p]sponsorcount`, `[p]sponsorlist`, `[p]sponsorreport`.",
   "name": "sponsorcheck",
-  "short": "Check if a GitHub user publicly sponsors a target (current vs past).",
+  "short": "GitHub Sponsors utilities (public): check/list + verify against a server role.",
+  "description": "Scrapes the public GitHub Sponsors page to determine if a username is a current/past public sponsor, lists visible sponsors, and verifies a guild 'Sponsor' role against the public list. Private sponsors are not visible.",
   "requirements": [],
-  "description": "Scrapes the public GitHub Sponsors page to see if a username appears as a current or past public sponsor. Private sponsors are not visible publicly.",
   "permissions": ["Send Messages"],
-  "tags": ["github", "sponsors", "moderation", "utility"]
+  "min_bot_version": "3.5.0",
+  "tags": ["github", "sponsors", "utility"],
+  "end_user_data_statement": "This cog does not store any end user data."
 }
