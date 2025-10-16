@@ -123,7 +123,6 @@ class SponsorCheck(commands.Cog):
         # 2) KSN→DSN resolution via Sponsor role (covers bullmoose → bullmoose20)
         role = ctx.guild.get_role(SPONSOR_ROLE_ID)
         if role:
-            # Find a member whose display name equals the provided target (case-insensitive)
             m = next((mem for mem in role.members if (mem.display_name or "").strip().lower() == t), None)
             if m:
                 ksn = (m.display_name or "").strip()
@@ -221,17 +220,16 @@ class SponsorCheck(commands.Cog):
         # Totals from badges (fallback to len(public) if not found)
         current_total = self._extract_total(html, CURRENT_COUNT_RE) or len(current_public)
         past_total = self._extract_total(html, PAST_COUNT_RE) or len(past_public)
-        current_private = max(0, current_total - len(current_public))
-        past_private = max(0, past_total - len(past_public))
+        current_public_n = len(current_public)
+        past_public_n = len(past_public)
+
+        current_private = max(0, current_total - current_public_n)
+        past_private = max(0, past_total - past_public_n)
+
+        public_union_n = len(union_set)
+        private_union_n = current_private + past_private  # sections are disjoint on GH page
 
         members = list(role.members)
-        mylogger.info(
-            f"sponsorreport: role='{role.name}' members={len(members)} "
-            f"current_total={current_total} past_total={past_total} "
-            f"current_public={len(current_public)} past_public={len(past_public)} "
-            f"current_private={current_private} past_private={past_private} union={len(union_set)} (print limit={limit})"
-        )
-
         matched_lines: list[str] = []
         unmatched_lines: list[str] = []
         matched_count = 0
@@ -250,17 +248,22 @@ class SponsorCheck(commands.Cog):
             else:
                 unmatched_lines.append(f"- {ksn or '—'} (`{m.id}`)")
 
-        # Estimated private/mismatch on Discord side
-        private_estimate = max(0, len(members) - matched_count)
+        # Unmatched vs GH totals (public + private)
+        unmatched_union = max(0, (public_union_n + private_union_n) - matched_count)
 
         header = [
-            f"**Current GH sponsors:** total **{current_total}**  (public **{len(current_public)}**, private **{current_private}**)",
-            f"**Past GH sponsors:** total **{past_total}**  (public **{len(past_public)}**, private **{past_private}**)",
-            f"**Public union (current ∪ past):** {len(union_set)}",
+            f"**Current GH sponsors:** total **{current_total}**  (public **{current_public_n}**, private **{current_private}**)",
+            f"**Past GH sponsors:** total **{past_total}**  (public **{past_public_n}**, private **{past_private}**)",
+            f"**Public union (current ∪ past):** {public_union_n}",
+            f"**Private union (current ∪ past):** {private_union_n}",
             f"**Discord users with Sponsor role:** {len(members)}",
             f"**Matched (server ↔ public):** {matched_count}",
-            f"**Estimated private/mismatch (Discord role side):** {private_estimate}",
+            f"**Unmatched (server ↔ public or private):** {unmatched_union}",
             "",
+            "_Notes: Public counts are exact. Private counts are derived as `total − public` per section. "
+            "The 'Unmatched' value compares GitHub totals (public+private) to matched server members; "
+            "it can exceed the number of Discord members due to private sponsors and/or name mismatches._",
+            ""
         ]
 
         body: list[str] = []
