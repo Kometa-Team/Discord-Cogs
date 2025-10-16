@@ -1,0 +1,10 @@
+{
+  "author": ["Kometa-Team"],
+  "install_msg": "SponsorCheck installed. Use the command to verify if a GitHub user is a public sponsor of the target (default: meisnate12).",
+  "name": "sponsorcheck",
+  "short": "Check if a GitHub user publicly sponsors a target (current vs past).",
+  "requirements": [],
+  "description": "Scrapes the public GitHub Sponsors page to see if a username appears as a current or past public sponsor. Private sponsors are not visible publicly.",
+  "permissions": ["Send Messages"],
+  "tags": ["github", "sponsors", "moderation", "utility"]
+}
