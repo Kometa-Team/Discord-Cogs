@@ -40,7 +40,7 @@ class SponsorCheck(commands.Cog):
 
         author_name = f"{ctx.author.name}#{ctx.author.discriminator}" if ctx.author else "Unknown"
         guild_name = ctx.guild.name if ctx.guild else "Direct Message"
-        channel_name = ctx.channel.name if hasattr(ctx.channel, "name") else "Direct Message"
+        channel_name = getattr(ctx.channel, "name", "Direct Message")
         mylogger.info(
             f"SponsorCheck invoked by {author_name} in {guild_name}/{channel_name} "
             f"(IDs: {ctx.guild.id if ctx.guild else 'N/A'}/{ctx.channel.id if ctx.guild else 'N/A'})"
@@ -77,7 +77,20 @@ class SponsorCheck(commands.Cog):
             return await ctx.send("Please provide a GitHub username, e.g. `[p]sponsor bullmoose20`.")
 
         url = SPONSORS_URL_FMT.format(sponsorable=SPONSORABLE)
-        await ctx.trigger_typing()
+
+        # Typing indicator (works across discord.py/Red variants)
+        try:
+            if hasattr(ctx.channel, "trigger_typing"):
+                await ctx.channel.trigger_typing()
+            else:
+                # Fallback to context manager if available
+                typing_cm = getattr(ctx, "typing", None)
+                if callable(typing_cm):
+                    async with ctx.typing():
+                        pass
+        except Exception as e:
+            mylogger.debug(f"Typing indicator failed (non-fatal): {e}")
+
         mylogger.debug(f"Fetching sponsors page: {url}")
 
         try:
