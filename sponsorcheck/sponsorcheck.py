@@ -38,6 +38,9 @@ HREF_USER_RE = re.compile(r'href="/([A-Za-z0-9-]{1,39})"')
 CURRENT_COUNT_RE = re.compile(r"Current\s+sponsors\s+(\d+)", re.IGNORECASE)
 PAST_COUNT_RE = re.compile(r"Past\s+sponsors\s+(\d+)", re.IGNORECASE)
 
+# Separators we treat as "Name SEP ghuser" → take last segment as candidate
+SEP_CHARS = ("|", "·", "-", "—", ":", "/")
+
 
 class SponsorCheck(commands.Cog):
     """GitHub sponsors tools: check/list public sponsors and verify against a server Sponsor role."""
@@ -202,6 +205,9 @@ class SponsorCheck(commands.Cog):
         """
         Cross-check guild members with the 'Sponsor' role against the public sponsor list.
 
+        Prints one line per member as:
+          - ksn=<Kometa server name>  dsn=<Discord username>  ghn=<GitHub username|—>  status=<current|past|not found>
+
         Usage:
           [p]sponsorreport              -> compare 'current' (default)
           [p]sponsorreport past         -> compare against public past sponsors
@@ -210,8 +216,9 @@ class SponsorCheck(commands.Cog):
 
         Notes:
         - Only *public* sponsors appear on the page (private sponsors won't).
-        - Discord names often != GitHub usernames; we try a few heuristics and
-          allow a hard-coded override via GH_USERNAME_MAP.
+        - We check both KSN (server display name) and DSN (Discord username),
+          plus minimal variants (digits-stripped and segment-tail).
+          You can override per member via GH_USERNAME_MAP.
         """
         which = which.lower()
         limit = max(1, min(500, limit))
@@ -230,9 +237,13 @@ class SponsorCheck(commands.Cog):
             mylogger.error(f"Error fetching sponsors page: {e}")
             return await ctx.send(f"⚠️ Could not reach GitHub Sponsors page: `{e}`")
 
+        # Build current/past sets and a case map for nice display of GHN
         html_current, html_past = self._split_sections(html)
-        current_set = {u.lower() for u in self._extract_usernames(html_current)}
-        past_set = {u.lower() for u in self._extract_usernames(html_past)}
+        current_list = self._extract_usernames(html_current)
+        past_list = self._extract_usernames(html_past)
+        current_set = {u.lower() for u in current_list}
+        past_set = {u.lower() for u in past_list}
+        case_map = {u.lower(): u for u in (current_list + past_list)}
 
         if which == "current":
             ref_set = current_set
@@ -243,101 +254,97 @@ class SponsorCheck(commands.Cog):
         else:
             return await ctx.send("Please use `current`, `past`, or `both`.")
 
-        # Build report
-        matched: list[tuple[discord.Member, str]] = []
-        unmatched: list[discord.Member] = []
-        ref_only: list[str] = []
+        members = list(role.members)
+        mylogger.info(f"sponsorreport {which}: role='{role.name}' members={len(members)} ref={len(ref_set)}")
 
-        guild_members = list(role.members)
-        mylogger.info(f"sponsorreport {which}: role='{role.name}' members={len(guild_members)} ref={len(ref_set)}")
+        lines: list[str] = []
+        matched = 0
+        matched_current = 0
+        matched_past = 0
 
-        matched_any = set()
+        for m in members[:limit]:
+            ksn_raw = (m.display_name or "").strip()
+            dsn_raw = (m.name or "").strip()
+            override = GH_USERNAME_MAP.get(m.id)
 
-        for m in guild_members:
-            gh_user = GH_USERNAME_MAP.get(m.id)
-            candidates = self._candidate_gh_usernames(m, override=gh_user)
+            candidates = self._gh_candidates_from_names(ksn_raw, dsn_raw, override)
+            mylogger.debug(f"KSN/DSN candidates for {m.id} -> {candidates}")
+
             hit = next((c for c in candidates if c in ref_set), None)
+
             if hit:
-                matched.append((m, hit))
-                matched_any.add(hit)
+                matched += 1
+                is_current = hit in current_set
+                is_past = hit in past_set
+                if is_current:
+                    matched_current += 1
+                if is_past:
+                    matched_past += 1
+
+                ghn_display = case_map.get(hit, hit)
+                status = "current" if is_current else ("past" if is_past else "found")
+                lines.append(
+                    f"- ksn={ksn_raw or '—'}  dsn={dsn_raw or '—'}  ghn={ghn_display}  status={status}"
+                )
             else:
-                unmatched.append(m)
+                lines.append(
+                    f"- ksn={ksn_raw or '—'}  dsn={dsn_raw or '—'}  ghn=—  status=not found (maybe private or mismatch)"
+                )
 
-        ref_only = sorted([u for u in ref_set if u not in matched_any])
-
-        # Compose lines with chunking protection
-        head = [
-            f"**Sponsor role:** {role.mention}  —  **Members:** {len(guild_members)}",
+        header = [
+            f"**Sponsor role:** {role.mention}  —  **Members scanned:** {min(len(members), limit)} / {len(members)}",
             (f"**Public sponsors (union current/past):** {len(ref_set)}"
              if which == "both" else
              f"**Public {which} sponsors:** {len(ref_set)}"),
+            f"**Matches:** total={matched}  current={matched_current}  past={matched_past}",
+            f"<{url}>",
             ""
         ]
 
-        body_lines: list[str] = []
-
-        if matched:
-            body_lines.append(f"**Matched (server ↔ public): {len(matched)}**")
-            body_lines += [f"- {m.display_name} (`{m.id}`) → **{u}**" for m, u in matched[:limit]]
-            if len(matched) > limit:
-                body_lines.append(f"…and {len(matched) - limit} more")
-            body_lines.append("")  # spacer
-        else:
-            body_lines.append("**Matched (server ↔ public): 0**\n")
-
-        if unmatched:
-            body_lines.append(f"**Unmatched in public list (could be private or name mismatch): {len(unmatched)}**")
-            body_lines += [f"- {m.display_name} (`{m.id}`)" for m in unmatched[:limit]]
-            if len(unmatched) > limit:
-                body_lines.append(f"…and {len(unmatched) - limit} more")
-            body_lines.append("")
-        else:
-            body_lines.append("**Unmatched in public list:** 0\n")
-
-        if ref_only:
-            body_lines.append(f"**On public page but no matching member:** {len(ref_only)}")
-            body_lines.append(", ".join(ref_only[:limit]))
-            if len(ref_only) > limit:
-                body_lines.append(f"…and {len(ref_only) - limit} more")
-            body_lines.append("")
-        else:
-            body_lines.append("**On public page but no matching member:** 0\n")
-
-        body_lines.append(f"<{url}>")
-
-        # Send head and body with protection
-        await self._send_report(ctx, head)
-        await self._send_report(ctx, body_lines)
+        await self._send_report(ctx, header + lines)
 
     # ---------------- Helpers ----------------
 
-    def _candidate_gh_usernames(self, member: discord.Member, override: str | None) -> list[str]:
+    def _gh_candidates_from_names(self, ksn: str, dsn: str, override: str | None) -> list[str]:
         """
-        Return candidate GitHub usernames for a Discord member.
-        Order matters (first hit wins).
+        Build GH username candidates from:
+          - override (if provided)
+          - DSN (Discord username) raw/normalized + digits-stripped + segment-tail
+          - KSN (server display name) raw/normalized + digits-stripped + segment-tail
+        Only minimal, targeted variants to reflect your ksn/dsn idea.
         """
+        raw_pairs = [("override", override or ""), ("dsn", dsn or ""), ("ksn", ksn or "")]
         cands: list[str] = []
-        if override:
-            cands.append(self._norm(override))
 
-        # Try display_name and username as is (common case when they match GH)
-        cands.append(self._norm(member.display_name))
-        cands.append(self._norm(member.name))
+        for label, raw in raw_pairs:
+            if not raw:
+                continue
+            base = self._norm(raw)
+            if base:
+                cands.append(base)
+                # digits-stripped tail (e.g., bullmoose20 -> bullmoose)
+                base_no_digits = re.sub(r"\d+$", "", base)
+                if base_no_digits and base_no_digits != base:
+                    cands.append(base_no_digits)
 
-        # Heuristic: if display name looks like "Name | ghuser" or "Name - ghuser"
-        for sep in ("|", "·", "-", "—", ":", "/"):
-            if sep in member.display_name:
-                trailing = member.display_name.split(sep)[-1]
-                cands.append(self._norm(trailing))
+            # segment tail after separators (e.g., "Name | bullmoose20")
+            for sep in SEP_CHARS:
+                if sep in raw:
+                    tail = raw.split(sep)[-1]
+                    tailn = self._norm(tail)
+                    if tailn:
+                        cands.append(tailn)
+                        tailn_no_digits = re.sub(r"\d+$", "", tailn)
+                        if tailn_no_digits and tailn_no_digits != tailn:
+                            cands.append(tailn_no_digits)
 
-        # Dedup while preserving order
-        seen = set()
-        out = []
-        for x in cands:
-            if x and x not in seen:
-                out.append(x)
-                seen.add(x)
-        mylogger.debug(f"Candidates for {member.display_name} -> {out}")
+        # Deduplicate preserving order
+        out: list[str] = []
+        seen: set[str] = set()
+        for c in cands:
+            if c and c not in seen:
+                out.append(c)
+                seen.add(c)
         return out
 
     @staticmethod
@@ -345,7 +352,8 @@ class SponsorCheck(commands.Cog):
         if not s:
             return ""
         s = s.strip().lstrip("@").lower()
-        # keep alnum and dash only (GH allows hyphen)
+        # keep alnum and dash only (GH allows hyphen). Remove spaces, underscores, dots.
+        s = s.replace(" ", "").replace("_", "").replace(".", "")
         return "".join(ch for ch in s if ch.isalnum() or ch == "-")
 
     def _typing_safely(self, ctx: commands.Context) -> None:
@@ -460,7 +468,6 @@ class SponsorCheck(commands.Cog):
             return
 
         # For larger reports, either send multiple chunks or attach
-        # If too many chunks (spammy), attach as file
         if len(chunks) > 5 or total_len > 6000:
             text = "".join(chunks)
             bio = BytesIO(text.encode("utf-8"))
@@ -471,6 +478,5 @@ class SponsorCheck(commands.Cog):
             )
             return
 
-        # Else: send the chunks (3–5 chunks)
         for c in chunks:
             await ctx.send(c)
