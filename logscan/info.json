@@ -1,10 +1,10 @@
 {
     "author" : ["Kometa-Team"],
-    "install_msg" : "You have just installed the 'logscan' cog. Have fun! Activate with `!logscan <message_link>` to review a kometa meta.log and make reccomendstions",
+    "install_msg" : "You have just installed the 'logscan' cog. Have fun! Activate with `!logscan <message_link>` to review a kometa meta.log and make recommendations",
     "name" : "logscan",
-    "short" : "Activate with `!logscan <message_link>` to review a kometa meta.log and make reccomendstions",
+    "short" : "Activate with `!logscan <message_link>` to review a kometa meta.log and make recommendations",
     "requirements": ["rarfile", "py7zr", "jsonschema"],
-    "description" : "Activate with `!logscan <message_link>` to review a kometa meta.log and make reccomendstions",
+    "description" : "Activate with `!logscan <message_link>` to review a kometa meta.log and make recommendations",
     "permissions" : ["Not sure"],
     "tags" : ["logscan, embeds, auto-responder"]
 }
