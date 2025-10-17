@@ -8,7 +8,8 @@ from typing import Optional, Set, Tuple, Dict, List
 
 import aiohttp
 import discord
-from redbot.core import commands, app_commands
+from redbot.core import commands
+from discord import app_commands
 
 # ---------- Logging ----------
 mylogger = logging.getLogger("sponsorcheck")
@@ -419,9 +420,8 @@ class SponsorCheck(commands.Cog):
     # ---------- Commands (hybrid = prefix + slash) ----------
     @_guilds_decorator()
     # @commands.hybrid_command(name="sponsor", with_app_command=True, description="Check a user’s GitHub sponsor status.")
-    @commands.hybrid_command(name="sponsor")
-    # @app_commands.describe(message_link="Check a user’s GitHub sponsor status.")
-    # @commands.guild_only()
+    @commands.hybrid_command(name="sponsor", with_app_command=True, description="Check a user’s GitHub sponsor status.")
+    @commands.guild_only()
     async def sponsor(self, ctx: commands.Context, username: str):
         """
         If they are a sponsor (public/private, current/past) and we can resolve a guild member without the role,
