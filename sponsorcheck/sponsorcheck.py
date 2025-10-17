@@ -420,7 +420,7 @@ class SponsorCheck(commands.Cog):
     @_guilds_decorator()
     # @commands.hybrid_command(name="sponsor", with_app_command=True, description="Check a user’s GitHub sponsor status.")
     @commands.hybrid_command(name="sponsor")
-    @app_commands.describe(message_link="Check a user’s GitHub sponsor status.")
+    # @app_commands.describe(message_link="Check a user’s GitHub sponsor status.")
     @commands.guild_only()
     async def sponsor(self, ctx: commands.Context, username: str):
         """
