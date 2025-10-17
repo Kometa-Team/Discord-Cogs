@@ -23,14 +23,33 @@ ALLOWED_ROLE_IDS = {
 SPONSOR_ROLE_ID = 862041125706268702  # Discord "Sponsor" role
 
 # ---------------- Optional overrides / allow-lists ----------------
-GH_USERNAME_MAP: Dict[int, str] = {}  # { discord_id: "github-username" } (public match helper)
-VERIFIED_PRIVATE_IDS: Set[int] = set()  # Discord IDs you've verified as private sponsors
-VERIFIED_PRIVATE_USERNAMES: Set[str] = set()  # Discord usernames (member.name), lowercase-checked
+# Public GH mapping helper: { discord_user_id: "github-username" }
+GH_USERNAME_MAP: Dict[int, str] = {}
+# Verified-private allow-list (used as "current" for role granting)
+VERIFIED_PRIVATE_IDS: Set[int] = set()
+VERIFIED_PRIVATE_USERNAMES: Set[str] = set()  # member.name (case-insensitive)
 
 # ---------------- GitHub GraphQL ----------------
 SPONSORABLE = "meisnate12"
 GRAPHQL_API = "https://api.github.com/graphql"
 PAT_FILE = "/opt/red-botmoose/secrets/github_pat.txt"  # fallback if env is not set
+
+# ---------------- Easter Egg ----------------
+EASTER_EGG_NAMES = {"sohjiro", "meisnate12"}  # lowercase
+EASTER_EGG_TITLE = "You found the hidden egg! 🥚"
+EASTER_EGG_DESC = (
+    "You're checking **{who}** — the developer/sponsorable behind this project.\n\n"
+    "If you're feeling generous, consider supporting the work directly ❤️\n"
+    "→ https://github.com/sponsors/meisnate12"
+)
+EASTER_EGG_FOOTER = "Thanks for supporting open source ✨"
+
+
+class GitHubAuthError(RuntimeError):
+    def __init__(self, code: str, detail: str):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
 
 
 class SponsorCheck(commands.Cog):
@@ -42,7 +61,7 @@ class SponsorCheck(commands.Cog):
         self._pat_source: Optional[str] = None  # "env" | "file" | None
         self._load_pat(initial=True)
 
-    # ---------------- Gate all commands ----------------
+    # ---------------- Role gate for all commands ----------------
     async def cog_check(self, ctx: commands.Context) -> bool:
         if not ctx.guild:
             mylogger.info("Blocked: command used in DM.")
@@ -95,13 +114,32 @@ class SponsorCheck(commands.Cog):
     async def sponsortoken_where(self, ctx: commands.Context):
         await ctx.send(f"Looking for PAT in env `GITHUB_PAT` **or** the file: `{PAT_FILE}`")
 
+    # ---------------- Easter egg helpers ----------------
+    def _is_easter_egg(self, s: str) -> bool:
+        return (s or "").strip().lstrip("@").lower() in EASTER_EGG_NAMES
+
+    async def _send_easter_egg(self, ctx: commands.Context, who: str) -> None:
+        try:
+            color = discord.Color.gold()
+        except Exception:
+            color = None
+        embed = discord.Embed(
+            title=EASTER_EGG_TITLE,
+            description=EASTER_EGG_DESC.format(who=who),
+            color=color,
+        )
+        embed.set_author(name="SponsorCheck")
+        embed.set_footer(text=EASTER_EGG_FOOTER)
+        await ctx.send(embed=embed)
+
     # ---------------- Commands ----------------
     @commands.command(name="sponsor")
     @commands.guild_only()
     async def sponsor(self, ctx: commands.Context, username: str):
         """
         Check a username (GitHub or Kometa display name) for sponsorship (current or past).
-        If matched via private sponsorship, we confirm without revealing private info.
+        For private hits, we confirm without revealing private info.
+        Easter egg for 'sohjiro' and 'meisnate12'.
         """
         self._ensure_pat()
         if not self._pat:
@@ -110,6 +148,10 @@ class SponsorCheck(commands.Cog):
         target = (username or "").lstrip("@").strip()
         if not target:
             return await ctx.send("Please provide a username, e.g. `[p]sponsor bullmoose20`.")
+
+        # 🥚 Easter egg
+        if self._is_easter_egg(target):
+            return await self._send_easter_egg(ctx, target)
 
         try:
             curr_pub, curr_priv, past_pub, past_priv = await self._fetch_all_sponsors()
@@ -142,11 +184,14 @@ class SponsorCheck(commands.Cog):
         # KSN→DSN via Sponsor role
         role = ctx.guild.get_role(SPONSOR_ROLE_ID)
         if role:
-            # try to resolve Kometa Server Name (display_name)
             m = next((mem for mem in role.members if (mem.display_name or "").strip().lower() == t), None)
             if m:
                 ksn = (m.display_name or "").strip()
                 dsn = (m.name or "").strip()
+                # Easter egg if resolving to an egg name
+                if self._is_easter_egg(dsn) or self._is_easter_egg(ksn):
+                    return await self._send_easter_egg(ctx, dsn or ksn or target)
+
                 override = GH_USERNAME_MAP.get(m.id)
                 candidates = self._gh_candidates_from_names(ksn, dsn, override)
 
@@ -158,7 +203,7 @@ class SponsorCheck(commands.Cog):
                         return await ctx.send(
                             f"✅ **{ksn}** → **{dsn}** → **{status}** public sponsor of **{SPONSORABLE}**."
                         )
-                # private next (consistent ending)
+                # private next
                 for cand in candidates:
                     lc = cand.lower()
                     if lc in union_private:
@@ -490,7 +535,7 @@ class SponsorCheck(commands.Cog):
                     cands.append(stripped)
             for sep in ("|", "·", "-", "—", ":", "/"):
                 if sep in raw:
-                    tail = norm(raw.split(sep)[-1])
+                    tail = norm(r.split(sep)[-1] if (r := raw) else "")
                     if tail and tail not in cands:
                         cands.append(tail)
                     if tail:
@@ -580,10 +625,3 @@ class SponsorCheck(commands.Cog):
         if len(token) <= keep:
             return "*" * len(token)
         return token[:keep] + "*" * (len(token) - keep)
-
-
-class GitHubAuthError(RuntimeError):
-    def __init__(self, code: str, detail: str):
-        super().__init__(detail)
-        self.code = code
-        self.detail = detail
