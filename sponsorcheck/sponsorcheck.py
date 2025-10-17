@@ -189,16 +189,19 @@ class SponsorCheck(commands.Cog):
     @commands.guild_only()
     async def sponsorreport(self, ctx: commands.Context, limit: int = 2000):
         """
-        Cross-check the guild Sponsor role vs:
-          - API public sponsors (current ∪ past)
-          - API private sponsors (current ∪ past) [used for matching; not printed]
-          - Manual verified-private allow-list
+        Actionable reconciliation using PAT (API-only):
+          • Grant Sponsor role: current sponsors in the server without the Sponsor role
+          • OK (has role & is current sponsor): ✅ nothing to do
+          • Has role but lapsed (past-only): consider removing or timeboxing
+          • Has role but never sponsored: likely a mistake or the GitHub name is significantly different from the Discord name → remove/fix by adding the mapping to the code
+          • Current sponsors not in server: useful to invite or ignore
         """
         self._ensure_pat()
         if not self._pat:
             return await self._send_pat_error(ctx)
 
         limit = max(1, min(5000, limit))
+
         role = ctx.guild.get_role(SPONSOR_ROLE_ID)
         if not role:
             mylogger.error(f"Sponsor role id {SPONSOR_ROLE_ID} not found in guild.")
@@ -213,102 +216,124 @@ class SponsorCheck(commands.Cog):
             mylogger.exception("Unexpected GitHub API error in sponsorreport()")
             return await ctx.send(f"⚠️ GitHub API error: `{e}`")
 
-        public_union = {u.lower() for u in (curr_pub | past_pub)}
-        private_union = {u.lower() for u in (curr_priv | past_priv)}
-        public_union_n = len(public_union)
-        private_union_n = len(private_union)
+        # --- Build sets (lowercased for matching)
+        current_all = {u.lower() for u in (curr_pub | curr_priv)}
+        past_all = {u.lower() for u in (past_pub | past_priv)}
+
+        public_union_n = len({u.lower() for u in (curr_pub | past_pub)})
+        private_union_n = len({u.lower() for u in (curr_priv | past_priv)})
 
         current_total = len(curr_pub) + len(curr_priv)
         past_total = len(past_pub) + len(past_priv)
 
-        members = list(role.members)
-        matched_public_lines: List[str] = []
-        matched_private_lines: List[str] = []
-        unmatched_lines: List[str] = []
-        matched_public_count = 0
-        matched_private_count = 0
+        # All guild members, the Sponsor role holders, and quick lookups
+        members = list(ctx.guild.members)  # check everyone (not just role holders)
+        role_member_ids = {m.id for m in role.members}
 
+        # Map GH login -> member (first match wins) to figure “current sponsors not in server”
+        gh_to_member: dict[str, discord.Member] = {}
+        # Map member.id -> hit classification "current"/"past"/None
+        member_to_hit: dict[int, str] = {}
+
+        # Manual verified-private fallback still supported
         verified_usernames = {u.lower() for u in VERIFIED_PRIVATE_USERNAMES}
-        verified_expected_ids = set(VERIFIED_PRIVATE_IDS)
-        for gm in ctx.guild.members:
-            if gm.name.lower() in verified_usernames:
-                verified_expected_ids.add(gm.id)
 
         for m in members:
             ksn = (m.display_name or "").strip()
             dsn = (m.name or "").strip()
             override = GH_USERNAME_MAP.get(m.id)
+            hit: str | None = None
 
             for cand in self._gh_candidates_from_names(ksn, dsn, override):
                 lc = cand.lower()
-                if lc in public_union:
-                    matched_public_count += 1
-                    matched_public_lines.append(f"- {ksn or '—'} (`{m.id}`) → **{dsn or '—'}**")
+                if lc in current_all:
+                    hit = "current"
+                    gh_to_member.setdefault(lc, m)
                     break
-                if lc in private_union or (m.id in VERIFIED_PRIVATE_IDS) or (dsn.lower() in verified_usernames):
-                    matched_private_count += 1
-                    reason = "API" if lc in private_union else "verified"
-                    matched_private_lines.append(f"- {ksn or '—'} (`{m.id}`) → **{dsn or '—'}** (private via {reason})")
+                if lc in past_all:
+                    hit = "past"
+                    gh_to_member.setdefault(lc, m)
                     break
-            else:
-                unmatched_lines.append(f"- {ksn or '—'} (`{m.id}`)")
 
-        # Verified-private missing the Sponsor role
-        role_member_ids = {m.id for m in members}
-        missing_role_verified: List[str] = []
-        for vid in verified_expected_ids:
-            if vid not in role_member_ids:
-                user = ctx.guild.get_member(vid)
-                if user is not None:
-                    missing_role_verified.append(f"- {user.display_name or user.name} (`{user.id}`)")
+            # If you maintain VERIFIED_* lists, treat them as current (for role granting)
+            if not hit and (m.id in VERIFIED_PRIVATE_IDS or dsn.lower() in verified_usernames):
+                hit = "current"
+
+            if hit:
+                member_to_hit[m.id] = hit
+
+        # ----- Buckets (actionable)
+        grant_role: list[str] = []  # current sponsors in server, missing role
+        ok_role: list[str] = []  # has role & current sponsor
+        lapsed_role: list[str] = []  # has role & past-only sponsor
+        never_role: list[str] = []  # has role & never sponsored (or mapping needed)
+
+        for m in members:
+            disp = (m.display_name or m.name or "—")
+            line = f"- {disp} (`{m.id}`)"
+            hit = member_to_hit.get(m.id)
+
+            if hit == "current":
+                if m.id in role_member_ids:
+                    ok_role.append(line)
                 else:
-                    missing_role_verified.append(f"- <Unknown user id `{vid}`>")
+                    grant_role.append(line)
+            elif hit == "past":
+                if m.id in role_member_ids:
+                    lapsed_role.append(line)
+                # if past-only and no role: no action bucket (they’re lapsed and don’t have the role anyway)
+            else:
+                if m.id in role_member_ids:
+                    never_role.append(line)
 
-        # Header math per your spec
-        unmatched_union = max(0, (public_union_n + private_union_n) - matched_public_count)
+        # Optional: current sponsors not in server (API says current; nobody matched in guild)
+        current_not_in_server = []
+        for gh_login in current_all:
+            if gh_login not in gh_to_member:
+                current_not_in_server.append(f"- {gh_login}")
 
+        # ----- Header
         header = [
             f"**Current GH sponsors:** total **{current_total}**  (public **{len(curr_pub)}**, private **{len(curr_priv)}**)",
-            f"**Past GH sponsors:** total **{len(past_pub) + len(past_priv)}**  (public **{len(past_pub)}**, private **{len(past_priv)}**)",
+            f"**Past GH sponsors:** total **{past_total}**  (public **{len(past_pub)}**, private **{len(past_priv)}**)",
             f"**Public union (current ∪ past):** {public_union_n}",
             f"**Private union (current ∪ past):** {private_union_n}",
-            f"**Discord users with Sponsor role:** {len(members)}",
-            f"**Matched (server ↔ public):** {matched_public_count}",
-            f"**Matched (server ↔ verified private):** {matched_private_count}",
-            f"**Unmatched (server ↔ public or private):** {unmatched_union}",
+            f"**Discord users with Sponsor role:** {len(role_member_ids)}",
             "",
-            "_Notes: Public counts are exact. Private sponsors are fetched with your PAT and used for matching, "
-            "but their identities are not printed. The ‘Unmatched’ value compares GitHub totals (public+private) "
-            "to matched server members; it can exceed the number of Discord members due to private sponsors and/or "
-            "name mismatches._",
+            f"**Grant Sponsor role (current sponsors in server, no role):** {len(grant_role)}",
+            f"**OK (has role & is current sponsor):** {len(ok_role)}",
+            f"**Has role but lapsed (past-only):** {len(lapsed_role)}",
+            f"**Has role but never sponsored:** {len(never_role)}",
+            f"**Current sponsors not in server:** {len(current_not_in_server)}",
             ""
         ]
 
-        body: List[str] = []
-        body.append("**Matched (server ↔ public):**")
-        body.extend(matched_public_lines[:limit])
-        if len(matched_public_lines) > limit:
-            body.append(f"…and {len(matched_public_lines) - limit} more")
-        body.append("")
+        # ----- Body (respect limit; big outputs will be attached by _send_report)
+        body: list[str] = []
 
-        body.append("**Matched (server ↔ verified private):**")
-        body.extend(matched_private_lines[:limit])
-        if len(matched_private_lines) > limit:
-            body.append(f"…and {len(matched_private_lines) - limit} more")
-        body.append("")
-
-        body.append("**Unmatched in public list (likely private or name mismatch, and not in verified list):**")
-        body.extend(unmatched_lines[:limit])
-        if len(unmatched_lines) > limit:
-            body.append(f"…and {len(unmatched_lines) - limit} more")
-        body.append("")
-
-        if missing_role_verified:
-            body.append("**Verified-private list but missing the Sponsor role:**")
-            body.extend(missing_role_verified[:limit])
-            if len(missing_role_verified) > limit:
-                body.append(f"…and {len(missing_role_verified) - limit} more")
+        def section(title: str, items: list[str]):
+            body.append(f"**{title}**")
+            if items:
+                body.extend(items[:limit])
+                extra = len(items) - min(len(items), limit)
+                if extra > 0:
+                    body.append(f"…and {extra} more")
+            else:
+                body.append("—")
             body.append("")
+
+        section("Grant Sponsor role: current sponsors in the server without the Sponsor role", grant_role)
+        section("OK (has role & is current sponsor): ✅ nothing to do", ok_role)
+        section("Has role but lapsed (past-only): consider removing or timeboxing", lapsed_role)
+        section(
+            "Has role but never sponsored: likely a mistake or the GitHub name is significantly different from the Discord name → remove/fix by adding the mapping to the code",
+            never_role)
+        section("Current sponsors not in server: useful to invite or ignore", current_not_in_server)
+
+        body.append("_Notes: Private and public sponsors are sourced from the GitHub API via your PAT. "
+                    "Private identities are matched for reconciliation but are not printed. "
+                    "If someone appears in **Has role but never sponsored**, add a mapping to `GH_USERNAME_MAP` "
+                    "or adjust the member’s display/Discord name to improve matching._")
 
         await self._send_report(ctx, header + body)
 
