@@ -8,23 +8,23 @@ from typing import Optional, Set, Tuple, Dict, List
 
 import aiohttp
 import discord
-from redbot.core import commands
+from redbot.core import commands, app_commands
 
 # ---------- Logging ----------
 mylogger = logging.getLogger("sponsorcheck")
 mylogger.setLevel(logging.DEBUG)
 
-# ---------- Access control (who can run the commands) ----------
+# ---------- Who can run the commands ----------
 ALLOWED_ROLE_IDS = {
     929756550380286153,  # Moderator
     929900016531828797,  # Kometa Masters
     981499667722424390,  # Kometa Apprentices
 }
-SPONSOR_ROLE_ID = 862041125706268702  # Discord "Sponsor" role
+SPONSOR_ROLE_ID = 862041125706268702  # Discord "Sponsor" role id
 
 # ---------- Optional mappings / allow-lists ----------
 GH_USERNAME_MAP: Dict[int, str] = {}  # { discord_user_id: "github-login" }
-VERIFIED_PRIVATE_IDS: Set[int] = set()  # discord IDs verified as private sponsors
+VERIFIED_PRIVATE_IDS: Set[int] = set()  # discord IDs verified as private sponsors (treated as current)
 VERIFIED_PRIVATE_USERNAMES: Set[str] = set()  # member.name strings (case-insensitive)
 
 # ---------- GitHub API ----------
@@ -32,10 +32,20 @@ SPONSORABLE = "meisnate12"
 GRAPHQL_API = "https://api.github.com/graphql"
 PAT_FILE = "/opt/red-botmoose/secrets/github_pat.txt"
 
-# ---------- Slash command setup ----------
-# Put your guild ID(s) here for immediate slash registration.
-# If left empty, the cog will do a global sync (which Discord surfaces more slowly).
-INSTANT_SLASH_GUILDS: Set[int] = set()  # e.g., {123456789012345678}
+# ---------- Slash registration ----------
+# Put your guild ID(s) here for INSTANT slash availability. Leave empty for global (slower).
+INSTANT_SLASH_GUILDS: Set[int] = set(822460010649878528)  # e.g., {123456789012345678}
+
+
+def _guilds_decorator():
+    """
+    Safe decorator that binds commands to specific guilds when provided.
+    When empty, it returns an identity decorator so code still loads.
+    """
+    if INSTANT_SLASH_GUILDS:
+        return app_commands.guilds(*INSTANT_SLASH_GUILDS)
+    return (lambda f: f)
+
 
 # ---------- Easter Egg ----------
 EASTER_EGG_NAMES = {"sohjiro", "meisnate12"}
@@ -64,7 +74,7 @@ class SponsorCheck(commands.Cog):
         self._pat_source: Optional[str] = None  # "env" | "file" | None
         self._load_pat(initial=True)
 
-    # ---------- Hybrid (slash) registration ----------
+    # ---------- Slash sync ----------
     async def cog_load(self) -> None:
         try:
             if INSTANT_SLASH_GUILDS:
@@ -74,7 +84,7 @@ class SponsorCheck(commands.Cog):
                         await self.bot.tree.sync(guild=guild)
                         mylogger.info(f"SponsorCheck: synced app commands to guild {gid}.")
             else:
-                await self.bot.tree.sync()
+                await self.bot.tree.sync()  # global (slower to appear)
                 mylogger.info("SponsorCheck: requested global app command sync.")
         except Exception as e:
             mylogger.error(f"SponsorCheck slash sync error: {e}")
@@ -156,7 +166,7 @@ class SponsorCheck(commands.Cog):
         e.set_author(name="SponsorCheck")
         if guild and guild.icon:
             try:
-                e.set_thumbnail(url=guild.icon.url)  # for list/report
+                e.set_thumbnail(url=guild.icon.url)  # used on list/report; on !sponsor we override with member avatar
             except Exception:
                 pass
         if footer:
@@ -223,32 +233,44 @@ class SponsorCheck(commands.Cog):
         return bool(role and role in member.roles)
 
     async def _try_grant_role(self, guild: discord.Guild, member: discord.Member) -> Tuple[bool, str]:
+        """Attempt to add the Sponsor role with helpful diagnostics."""
         role = guild.get_role(SPONSOR_ROLE_ID)
         if not role:
             return False, f"Role id `{SPONSOR_ROLE_ID}` not found."
         if role in member.roles:
             return True, f"Already has `{role.name}`."
+
         me = guild.me
         if not me:
             return False, "Bot member not resolved."
         if not me.guild_permissions.manage_roles:
             return False, "Bot lacks `Manage Roles` permission."
-        if role >= me.top_role:
+        if guild.owner_id == member.id:
+            return False, "Target is the server owner (bots cannot modify owners)."
+
+        role_pos = getattr(role, "position", -1)
+        me_pos = getattr(me.top_role, "position", -1)
+        user_pos = getattr(member.top_role, "position", -1)
+
+        if role_pos >= me_pos:
             return False, f"Bot’s top role is not above `{role.name}`."
-        if member.top_role >= me.top_role and member != me:
+        if user_pos >= me_pos and member != me:
             return False, "Target member has a role equal/higher than the bot."
+
         try:
             await member.add_roles(role, reason="SponsorCheck: auto-grant on sponsor hit")
             return True, f"Granted `{role.name}`."
         except discord.Forbidden:
-            return False, "Discord forbids adding this role (hierarchy/permissions)."
+            return False, "Discord forbids adding this role (permissions/hierarchy)."
         except discord.HTTPException as e:
             return False, f"HTTP error: {e}"
 
     # ---------- GitHub GraphQL ----------
     async def _fetch_all_sponsors(self) -> Tuple[Set[str], Set[str], Set[str], Set[str]]:
+        """Return (current_public, current_private, past_public, past_private)."""
         if not self._pat:
             raise GitHubAuthError("missing_pat", "GitHub token not configured")
+
         query = """
         query($login:String!, $first:Int!, $after:String) {
           user(login: $login) {
@@ -268,6 +290,7 @@ class SponsorCheck(commands.Cog):
             "Content-Type": "application/json",
             "User-Agent": "Red-SponsorCheck/1.0 (+Kometa)"
         }
+
         cp: Set[str] = set();
         cpr: Set[str] = set();
         pp: Set[str] = set();
@@ -284,6 +307,7 @@ class SponsorCheck(commands.Cog):
                     if status >= 400:
                         raise GitHubAuthError("http_error", f"HTTP {status}: {text[:200]}")
                     data = await r.json()
+
                 if data.get("errors"):
                     msg = "; ".join(e.get("message", "error") for e in data["errors"])
                     if "Bad credentials" in msg:
@@ -291,10 +315,12 @@ class SponsorCheck(commands.Cog):
                     if "Resource not accessible" in msg or "Insufficient scopes" in msg:
                         raise GitHubAuthError("forbidden", "Insufficient scopes/access to Sponsors API.")
                     raise GitHubAuthError("graphql_error", msg[:300])
+
                 try:
                     conn = data["data"]["user"]["sponsorshipsAsMaintainer"]
                 except Exception:
                     raise GitHubAuthError("schema_error", f"Unexpected response: {str(data)[:200]}")
+
                 for n in conn.get("nodes", []):
                     login = ((n.get("sponsorEntity") or {}).get("login") or "").strip()
                     if not login:
@@ -305,13 +331,15 @@ class SponsorCheck(commands.Cog):
                         (cpr if priv else cp).add(login)
                     else:
                         (ppr if priv else pp).add(login)
+
                 if conn["pageInfo"]["hasNextPage"]:
                     vars["after"] = conn["pageInfo"]["endCursor"]
                 else:
                     break
+
         return cp, cpr, pp, ppr
 
-    # ---------- Utility ----------
+    # ---------- Utilities ----------
     def _gh_candidates_from_names(self, ksn: str, dsn: str, override: Optional[str]) -> List[str]:
         def norm(s: Optional[str]) -> str:
             if not s:
@@ -341,6 +369,7 @@ class SponsorCheck(commands.Cog):
 
     async def _send_report(self, ctx: commands.Context, lines: List[str], *, base_name: str, embed: discord.Embed):
         await ctx.send(embed=embed)
+        # try inline; else attach
         chunks: List[str] = []
         buf = ""
         for line in lines:
@@ -388,6 +417,7 @@ class SponsorCheck(commands.Cog):
         return token[:keep] + "*" * (len(token) - keep) if len(token) > keep else "*" * len(token)
 
     # ---------- Commands (hybrid = prefix + slash) ----------
+    @_guilds_decorator()
     @commands.hybrid_command(name="sponsor", with_app_command=True, description="Check a user’s GitHub sponsor status.")
     @commands.guild_only()
     async def sponsor(self, ctx: commands.Context, username: str):
@@ -409,7 +439,8 @@ class SponsorCheck(commands.Cog):
                 title=EASTER_EGG_TITLE,
                 description=EASTER_EGG_DESC.format(who=target),
                 color=discord.Color.gold(),
-            ).set_author(name="SponsorCheck")
+            )
+            egg.set_author(name="SponsorCheck")
             return await ctx.send(embed=egg)
 
         try:
@@ -528,6 +559,7 @@ class SponsorCheck(commands.Cog):
                 pass
         return await ctx.send(embed=em)
 
+    @_guilds_decorator()
     @commands.hybrid_command(name="sponsorlist", with_app_command=True,
                              description="List public sponsors; show private counts.")
     @commands.guild_only()
@@ -563,6 +595,7 @@ class SponsorCheck(commands.Cog):
                                    footer="Private sponsors are not listed by name.")
         )
 
+    @_guilds_decorator()
     @commands.hybrid_command(name="sponsorreport", with_app_command=True,
                              description="Actionable reconciliation report.")
     @commands.guild_only()
