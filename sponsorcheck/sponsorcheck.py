@@ -34,7 +34,7 @@ PAT_FILE = "/opt/red-botmoose/secrets/github_pat.txt"
 
 # ---------- Slash registration ----------
 # Put your guild ID(s) here for INSTANT slash availability. Leave empty for global (slower).
-INSTANT_SLASH_GUILDS: Set[int] = set{822460010649878528}  # e.g., {123456789012345678}
+INSTANT_SLASH_GUILDS: Set[int] = {822460010649878528}  # e.g., {123456789012345678}
 
 
 def _guilds_decorator():
