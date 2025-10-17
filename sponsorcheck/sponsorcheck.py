@@ -39,7 +39,7 @@ class SponsorCheck(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._pat: Optional[str] = None
-        self._pat_source: Optional[str] = None  # "env" or "file" or None
+        self._pat_source: Optional[str] = None  # "env" | "file" | None
         self._load_pat(initial=True)
 
     # ---------------- Gate all commands ----------------
@@ -101,7 +101,7 @@ class SponsorCheck(commands.Cog):
     async def sponsor(self, ctx: commands.Context, username: str):
         """
         Check a username (GitHub or Kometa display name) for sponsorship (current or past).
-        For private hits, confirms without revealing private info.
+        If matched via private sponsorship, we confirm without revealing private info.
         """
         self._ensure_pat()
         if not self._pat:
@@ -120,34 +120,52 @@ class SponsorCheck(commands.Cog):
             mylogger.exception("Unexpected GitHub API error in sponsor()")
             return await ctx.send(f"⚠️ GitHub API error: `{e}`")
 
-        public_union = {u.lower() for u in (curr_pub | past_pub)}
-        private_union = {u.lower() for u in (curr_priv | past_priv)}
+        # Build sets
+        current_public = {u.lower() for u in curr_pub}
+        past_public = {u.lower() for u in past_pub}
+        current_private = {u.lower() for u in curr_priv}
+        past_private = {u.lower() for u in past_priv}
+
+        union_public = current_public | past_public
+        union_private = current_private | past_private
         t = target.lower()
 
-        if t in public_union:
-            status = "current" if t in {x.lower() for x in curr_pub} else "past"
+        # Direct GH login match
+        if t in union_public:
+            status = "current" if t in current_public else "past"
             return await ctx.send(f"✅ **{target}** is a **{status}** public sponsor of **{SPONSORABLE}**.")
-        if t in private_union:
-            status = "current" if t in {x.lower() for x in curr_priv} else "past"
+        if t in union_private:
+            status = "current" if t in current_private else "past"
             return await ctx.send(
                 f"✅ **{target}** is a **{status}** sponsor of **{SPONSORABLE}** (marked **private**).")
 
         # KSN→DSN via Sponsor role
         role = ctx.guild.get_role(SPONSOR_ROLE_ID)
         if role:
+            # try to resolve Kometa Server Name (display_name)
             m = next((mem for mem in role.members if (mem.display_name or "").strip().lower() == t), None)
             if m:
                 ksn = (m.display_name or "").strip()
                 dsn = (m.name or "").strip()
-                for cand in self._gh_candidates_from_names(ksn, dsn, GH_USERNAME_MAP.get(m.id)):
+                override = GH_USERNAME_MAP.get(m.id)
+                candidates = self._gh_candidates_from_names(ksn, dsn, override)
+
+                # public first
+                for cand in candidates:
                     lc = cand.lower()
-                    if lc in public_union:
-                        status = "current" if lc in {x.lower() for x in curr_pub} else "past"
+                    if lc in union_public:
+                        status = "current" if lc in current_public else "past"
                         return await ctx.send(
-                            f"✅ **{ksn}** → **{dsn}** → **{status}** public sponsor of **{SPONSORABLE}**.")
-                    if lc in private_union:
-                        status = "current" if lc in {x.lower() for x in curr_priv} else "past"
-                        return await ctx.send(f"✅ **{ksn}** → **{dsn}** → **{status}** sponsor (marked **private**).")
+                            f"✅ **{ksn}** → **{dsn}** → **{status}** public sponsor of **{SPONSORABLE}**."
+                        )
+                # private next (consistent ending)
+                for cand in candidates:
+                    lc = cand.lower()
+                    if lc in union_private:
+                        status = "current" if lc in current_private else "past"
+                        return await ctx.send(
+                            f"✅ **{ksn}** → **{dsn}** → **{status}** sponsor of **{SPONSORABLE}** (marked **private**)."
+                        )
 
         return await ctx.send(f"❌ **{target}** does not appear as a sponsor of **{SPONSORABLE}** (current or past).")
 
@@ -156,6 +174,7 @@ class SponsorCheck(commands.Cog):
     async def sponsorlist(self, ctx: commands.Context):
         """
         List all *public* sponsors (current & past) and show private counts (no private names printed).
+        Large outputs attach as 'sponsorlist_<guild>_<timestamp>.txt'.
         """
         self._ensure_pat()
         if not self._pat:
@@ -183,7 +202,7 @@ class SponsorCheck(commands.Cog):
             "",
             "Private sponsors are intentionally not listed by name.",
         ]
-        await self._send_report(ctx, lines)
+        await self._send_report(ctx, lines, base_name="sponsorlist")
 
     @commands.command(name="sponsorreport")
     @commands.guild_only()
@@ -191,10 +210,11 @@ class SponsorCheck(commands.Cog):
         """
         Actionable reconciliation using PAT (API-only):
           • Grant Sponsor role: current sponsors in the server without the Sponsor role
-          • OK (has role & is current sponsor): ✅ nothing to do
-          • Has role but lapsed (past-only): consider removing or timeboxing
-          • Has role but never sponsored: likely a mistake or the GitHub name is significantly different from the Discord name → remove/fix by adding the mapping to the code
-          • Current sponsors not in server: useful to invite or ignore
+          • OK (has role & is current sponsor)
+          • Has role but lapsed (past-only)
+          • Has role but never sponsored (or needs mapping)
+          • Current sponsors not in server (GitHub usernames)
+        Large outputs attach as 'sponsorreport_<guild>_<timestamp>.txt'.
         """
         self._ensure_pat()
         if not self._pat:
@@ -216,26 +236,20 @@ class SponsorCheck(commands.Cog):
             mylogger.exception("Unexpected GitHub API error in sponsorreport()")
             return await ctx.send(f"⚠️ GitHub API error: `{e}`")
 
-        # --- Build sets (lowercased for matching)
+        # Build sets (lowercased)
         current_all = {u.lower() for u in (curr_pub | curr_priv)}
         past_all = {u.lower() for u in (past_pub | past_priv)}
-
         public_union_n = len({u.lower() for u in (curr_pub | past_pub)})
         private_union_n = len({u.lower() for u in (curr_priv | past_priv)})
-
         current_total = len(curr_pub) + len(curr_priv)
         past_total = len(past_pub) + len(past_priv)
 
-        # All guild members, the Sponsor role holders, and quick lookups
-        members = list(ctx.guild.members)  # check everyone (not just role holders)
+        members = list(ctx.guild.members)  # check everyone
         role_member_ids = {m.id for m in role.members}
 
-        # Map GH login -> member (first match wins) to figure “current sponsors not in server”
         gh_to_member: dict[str, discord.Member] = {}
-        # Map member.id -> hit classification "current"/"past"/None
         member_to_hit: dict[int, str] = {}
 
-        # Manual verified-private fallback still supported
         verified_usernames = {u.lower() for u in VERIFIED_PRIVATE_USERNAMES}
 
         for m in members:
@@ -255,18 +269,18 @@ class SponsorCheck(commands.Cog):
                     gh_to_member.setdefault(lc, m)
                     break
 
-            # If you maintain VERIFIED_* lists, treat them as current (for role granting)
+            # Manual verified-private fallback → treat as current
             if not hit and (m.id in VERIFIED_PRIVATE_IDS or dsn.lower() in verified_usernames):
                 hit = "current"
 
             if hit:
                 member_to_hit[m.id] = hit
 
-        # ----- Buckets (actionable)
-        grant_role: list[str] = []  # current sponsors in server, missing role
-        ok_role: list[str] = []  # has role & current sponsor
-        lapsed_role: list[str] = []  # has role & past-only sponsor
-        never_role: list[str] = []  # has role & never sponsored (or mapping needed)
+        # Buckets
+        grant_role: List[str] = []  # current sponsors in server, missing role
+        ok_role: List[str] = []  # has role & current sponsor
+        lapsed_role: List[str] = []  # has role & past-only sponsor
+        never_role: List[str] = []  # has role & never sponsored (or needs mapping)
 
         for m in members:
             disp = (m.display_name or m.name or "—")
@@ -281,18 +295,17 @@ class SponsorCheck(commands.Cog):
             elif hit == "past":
                 if m.id in role_member_ids:
                     lapsed_role.append(line)
-                # if past-only and no role: no action bucket (they’re lapsed and don’t have the role anyway)
             else:
                 if m.id in role_member_ids:
                     never_role.append(line)
 
-        # Optional: current sponsors not in server (API says current; nobody matched in guild)
+        # Current sponsors not in server (GitHub usernames)
         current_not_in_server = []
         for gh_login in current_all:
             if gh_login not in gh_to_member:
                 current_not_in_server.append(f"- {gh_login}")
 
-        # ----- Header
+        # Header summary
         header = [
             f"**Current GH sponsors:** total **{current_total}**  (public **{len(curr_pub)}**, private **{len(curr_priv)}**)",
             f"**Past GH sponsors:** total **{past_total}**  (public **{len(past_pub)}**, private **{len(past_priv)}**)",
@@ -303,16 +316,16 @@ class SponsorCheck(commands.Cog):
             f"**Grant Sponsor role (current sponsors in server, no role):** {len(grant_role)}",
             f"**OK (has role & is current sponsor):** {len(ok_role)}",
             f"**Has role but lapsed (past-only):** {len(lapsed_role)}",
-            f"**Has role but never sponsored:** {len(never_role)}",
-            f"**Current sponsors not in server:** {len(current_not_in_server)}",
+            f"**Has role but never sponsored (or needs mapping):** {len(never_role)}",
+            f"**Current sponsors not in server (GitHub usernames):** {len(current_not_in_server)}",
             ""
         ]
 
-        # ----- Body (respect limit; big outputs will be attached by _send_report)
-        body: list[str] = []
+        # Body sections — counts reflected in each title
+        body: List[str] = []
 
-        def section(title: str, items: list[str]):
-            body.append(f"**{title}**")
+        def section(title: str, items: List[str]):
+            body.append(f"**{title} ({len(items)}):**")
             if items:
                 body.extend(items[:limit])
                 extra = len(items) - min(len(items), limit)
@@ -323,24 +336,19 @@ class SponsorCheck(commands.Cog):
             body.append("")
 
         section("Grant Sponsor role: current sponsors in the server without the Sponsor role", grant_role)
-        section("OK (has role & is current sponsor): ✅ nothing to do", ok_role)
-        section("Has role but lapsed (past-only): consider removing or timeboxing", lapsed_role)
-        section(
-            "Has role but never sponsored: likely a mistake or the GitHub name is significantly different from the Discord name → remove/fix by adding the mapping to the code",
-            never_role)
-        section("Current sponsors not in server: useful to invite or ignore", current_not_in_server)
+        section("OK (has role & is current sponsor)", ok_role)
+        section("Has role but lapsed (past-only)", lapsed_role)
+        section("Has role but never sponsored (or needs mapping)", never_role)
+        section("Current sponsors not in server (GitHub usernames)", current_not_in_server)
 
-        body.append("_Notes: Private and public sponsors are sourced from the GitHub API via your PAT. "
-                    "Private identities are matched for reconciliation but are not printed. "
-                    "If someone appears in **Has role but never sponsored**, add a mapping to `GH_USERNAME_MAP` "
-                    "or adjust the member’s display/Discord name to improve matching._")
+        body.append("_Notes: Public and private sponsors are from the GitHub API via your PAT. "
+                    "Private identities are matched for reconciliation but are not printed._")
 
-        await self._send_report(ctx, header + body)
+        await self._send_report(ctx, header + body, base_name="sponsorreport")
 
     # ---------------- GitHub API helpers ----------------
     def _load_pat(self, initial: bool = False, force: bool = False) -> None:
         """Load PAT from env or file. Env wins. If force=True, always re-read."""
-        # If not forcing and we already have a PAT, keep it.
         if self._pat and not force:
             return
 
@@ -351,7 +359,6 @@ class SponsorCheck(commands.Cog):
             mylogger.info("Loaded GitHub PAT from environment.")
             return
 
-        # Try file
         try:
             with open(PAT_FILE, "r", encoding="utf-8") as f:
                 token = f.read().strip()
@@ -373,10 +380,7 @@ class SponsorCheck(commands.Cog):
         self._pat_source = None
 
     def _ensure_pat(self) -> None:
-        """
-        Ensure we have a PAT loaded. If missing, try to load again (e.g., after creating the file).
-        Note: env vars won't update unless the process restarts; we still check in case a wrapper injected it.
-        """
+        """Try to (re)load the PAT before each command."""
         if not self._pat:
             self._load_pat(initial=False, force=True)
 
@@ -495,12 +499,19 @@ class SponsorCheck(commands.Cog):
                             cands.append(stripped_tail)
         return cands
 
-    async def _send_report(self, ctx: commands.Context, lines: List[str], header: Optional[str] = None):
+    async def _send_report(self, ctx: commands.Context, lines: List[str], header: Optional[str] = None, *,
+                           base_name: str = "sponsorreport"):
+        """
+        Safely send a possibly-large report: paginate or attach as a timestamped .txt.
+        base_name: "sponsorreport" (default) or "sponsorlist" etc. Used for the attachment filename.
+        """
         out_lines: List[str] = []
         if header:
-            out_lines += [header, ""]
+            out_lines.append(header)
+            out_lines.append("")
         out_lines.extend(lines)
 
+        # Chunk to stay under Discord 2000-char cap (use 1800 buffer per chunk)
         chunks: List[str] = []
         buf = ""
         for line in out_lines:
@@ -519,10 +530,11 @@ class SponsorCheck(commands.Cog):
                 await ctx.send(c)
             return
 
+        # Large: attach as file with requested base name
         text = "".join(chunks)
         bio = BytesIO(text.encode("utf-8"))
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        filename = f"sponsorreport_{ctx.guild.id}_{ts}.txt"
+        filename = f"{base_name}_{ctx.guild.id}_{ts}.txt"
         await ctx.send("Report was large; attached as a file:", file=discord.File(bio, filename=filename))
 
     def _typing_safely(self, ctx: commands.Context) -> None:
