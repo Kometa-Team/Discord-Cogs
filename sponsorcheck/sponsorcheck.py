@@ -10,84 +10,100 @@ import aiohttp
 import discord
 from redbot.core import commands
 
-# ---------------- Logging (mimics your validate cog pattern) ----------------
+# ---------------- Logging ----------------
 mylogger = logging.getLogger("sponsorcheck")
 mylogger.setLevel(logging.DEBUG)
 
-# ---------------- Config: Allowed roles (by ID) ----------------
+# ---------------- Access control ----------------
 ALLOWED_ROLE_IDS = {
     929756550380286153,  # Moderator
     929900016531828797,  # Kometa Masters
     981499667722424390,  # Kometa Apprentices
 }
+SPONSOR_ROLE_ID = 862041125706268702  # Discord "Sponsor" role
 
-# ---------------- Sponsor role (guild role for supporters) ------------------
-SPONSOR_ROLE_ID = 862041125706268702  # "Sponsor" role in your server
-
-# ---------------- Optional overrides ----------------
-# If a member's Discord identity differs from their public GitHub username,
-# you can override here: { discord_id: "github-username" } (used for public matching only)
-GH_USERNAME_MAP: Dict[int, str] = {}
-
-# Optional manual allow-list for private sponsors (as an extra backstop).
-VERIFIED_PRIVATE_IDS: Set[int] = set()
-VERIFIED_PRIVATE_USERNAMES: Set[str] = set()  # member.name, lowercase compared
+# ---------------- Optional overrides / allow-lists ----------------
+GH_USERNAME_MAP: Dict[int, str] = {}  # { discord_id: "github-username" } (public match helper)
+VERIFIED_PRIVATE_IDS: Set[int] = set()  # Discord IDs you've verified as private sponsors
+VERIFIED_PRIVATE_USERNAMES: Set[str] = set()  # Discord usernames (member.name), lowercase-checked
 
 # ---------------- GitHub GraphQL ----------------
 SPONSORABLE = "meisnate12"
 GRAPHQL_API = "https://api.github.com/graphql"
-# Read PAT from env or file. Env has priority.
-PAT_FILE = "/opt/red-botmoose/secrets/github_pat.txt"
+PAT_FILE = "/opt/red-botmoose/secrets/github_pat.txt"  # fallback if env is not set
 
 
 class SponsorCheck(commands.Cog):
-    """GitHub sponsors tools via the GraphQL API (no scraping)."""
+    """GitHub Sponsors via GraphQL API (no scraping)."""
 
     def __init__(self, bot):
         self.bot = bot
-        self._pat: Optional[str] = self._load_pat()
+        self._pat: Optional[str] = None
+        self._pat_source: Optional[str] = None  # "env" or "file" or None
+        self._load_pat(initial=True)
 
-    # ---------------- Role gate for all commands ----------------
+    # ---------------- Gate all commands ----------------
     async def cog_check(self, ctx: commands.Context) -> bool:
         if not ctx.guild:
             mylogger.info("Blocked: command used in DM.")
             return False
 
-        author_name = f"{ctx.author.name}#{ctx.author.discriminator}" if ctx.author else "Unknown"
-        guild_name = ctx.guild.name if ctx.guild else "Direct Message"
-        channel_name = getattr(ctx.channel, "name", "Direct Message")
+        author = f"{ctx.author.name}#{ctx.author.discriminator}"
         mylogger.info(
-            f"SponsorCheck invoked by {author_name} in {guild_name}/{channel_name} "
-            f"(IDs: {ctx.guild.id if ctx.guild else 'N/A'}/{ctx.channel.id if ctx.guild else 'N/A'})"
+            f"SponsorCheck invoked by {author} in {ctx.guild.name}/{getattr(ctx.channel, 'name', 'DM')} "
+            f"(IDs: {ctx.guild.id}/{ctx.channel.id})"
         )
 
         user_role_ids = {r.id for r in ctx.author.roles}
-        has_allowed = bool(ALLOWED_ROLE_IDS & user_role_ids)
-        has_manage_guild = ctx.author.guild_permissions.manage_guild
-
-        if has_allowed or has_manage_guild:
-            mylogger.debug(
-                f"Access granted: has_allowed={has_allowed}, manage_guild={has_manage_guild}, "
-                f"user_roles={list(user_role_ids)}"
-            )
+        if (ALLOWED_ROLE_IDS & user_role_ids) or ctx.author.guild_permissions.manage_guild:
+            mylogger.debug(f"Access granted. user_roles={list(user_role_ids)}")
             return True
 
-        mylogger.info(
-            f"Access denied. Needs any of {list(ALLOWED_ROLE_IDS)}; user_roles={list(user_role_ids)}"
-        )
+        mylogger.info(f"Access denied. Needs one of {list(ALLOWED_ROLE_IDS)}.")
         return False
 
-    # ---------------- Commands ----------------
+    # ---------------- Owner token tools ----------------
+    @commands.group(name="sponsortoken", invoke_without_command=True)
+    @commands.is_owner()
+    async def sponsortoken(self, ctx: commands.Context):
+        """Owner: manage/view GitHub PAT status."""
+        await ctx.send("Subcommands: `check`, `reload`, `where`")
 
+    @sponsortoken.command(name="check")
+    @commands.is_owner()
+    async def sponsortoken_check(self, ctx: commands.Context):
+        self._ensure_pat()
+        if not self._pat:
+            await ctx.send(
+                "❌ No GitHub PAT loaded. Set env `GITHUB_PAT` or create the file at the path in `[p]sponsortoken where`.")
+            return
+        masked = self._mask(self._pat)
+        await ctx.send(f"✅ PAT is loaded from **{self._pat_source}**. Token (masked): `{masked}`")
+
+    @sponsortoken.command(name="reload")
+    @commands.is_owner()
+    async def sponsortoken_reload(self, ctx: commands.Context):
+        self._load_pat(initial=False, force=True)
+        if self._pat:
+            await ctx.send(f"🔁 Reloaded PAT from **{self._pat_source}**. (Use `[p]sponsortoken check` to verify.)")
+        else:
+            await ctx.send(
+                "❌ Reload attempted but no PAT found. If you set an env var, you must restart the bot process.")
+
+    @sponsortoken.command(name="where")
+    @commands.is_owner()
+    async def sponsortoken_where(self, ctx: commands.Context):
+        await ctx.send(f"Looking for PAT in env `GITHUB_PAT` **or** the file: `{PAT_FILE}`")
+
+    # ---------------- Commands ----------------
     @commands.command(name="sponsor")
     @commands.guild_only()
     async def sponsor(self, ctx: commands.Context, username: str):
         """
-        Check if <username> appears as a sponsor (current or past).
-        If not found, try resolving a Sponsor-role member's display name -> Discord username -> GH candidates.
-        For privacy: if the hit is PRIVATE, we confirm sponsorship without revealing private info.
-        Usage: [p]sponsor <github-username or Kometa server name>
+        Check a username (GitHub or Kometa display name) for sponsorship (current or past).
+        For private hits, confirms without revealing private info.
         """
+        self._ensure_pat()
         if not self._pat:
             return await self._send_pat_error(ctx)
 
@@ -104,58 +120,44 @@ class SponsorCheck(commands.Cog):
             mylogger.exception("Unexpected GitHub API error in sponsor()")
             return await ctx.send(f"⚠️ GitHub API error: `{e}`")
 
-        # union for public; we will *check* private but avoid printing names if it's a private hit
         public_union = {u.lower() for u in (curr_pub | past_pub)}
         private_union = {u.lower() for u in (curr_priv | past_priv)}
         t = target.lower()
 
-        # direct GH username check
         if t in public_union:
             status = "current" if t in {x.lower() for x in curr_pub} else "past"
             return await ctx.send(f"✅ **{target}** is a **{status}** public sponsor of **{SPONSORABLE}**.")
-
         if t in private_union:
             status = "current" if t in {x.lower() for x in curr_priv} else "past"
             return await ctx.send(
-                f"✅ **{target}** is a **{status}** sponsor of **{SPONSORABLE}** (marked **private** on GitHub)."
-            )
+                f"✅ **{target}** is a **{status}** sponsor of **{SPONSORABLE}** (marked **private**).")
 
-        # KSN→DSN via Sponsor role → GH candidates
+        # KSN→DSN via Sponsor role
         role = ctx.guild.get_role(SPONSOR_ROLE_ID)
         if role:
             m = next((mem for mem in role.members if (mem.display_name or "").strip().lower() == t), None)
             if m:
                 ksn = (m.display_name or "").strip()
                 dsn = (m.name or "").strip()
-                candidates = self._gh_candidates_from_names(ksn, dsn, GH_USERNAME_MAP.get(m.id))
+                for cand in self._gh_candidates_from_names(ksn, dsn, GH_USERNAME_MAP.get(m.id)):
+                    lc = cand.lower()
+                    if lc in public_union:
+                        status = "current" if lc in {x.lower() for x in curr_pub} else "past"
+                        return await ctx.send(
+                            f"✅ **{ksn}** → **{dsn}** → **{status}** public sponsor of **{SPONSORABLE}**.")
+                    if lc in private_union:
+                        status = "current" if lc in {x.lower() for x in curr_priv} else "past"
+                        return await ctx.send(f"✅ **{ksn}** → **{dsn}** → **{status}** sponsor (marked **private**).")
 
-                # public first
-                hit_public = next((c for c in candidates if c.lower() in public_union), None)
-                if hit_public:
-                    status = "current" if hit_public.lower() in {x.lower() for x in curr_pub} else "past"
-                    return await ctx.send(
-                        f"✅ **{ksn}** → **{dsn}** → **{status}** public sponsor of **{SPONSORABLE}**.")
-
-                # then private (confirm without leaking anything extra)
-                hit_private = next((c for c in candidates if c.lower() in private_union), None)
-                if hit_private:
-                    status = "current" if hit_private.lower() in {x.lower() for x in curr_priv} else "past"
-                    return await ctx.send(
-                        f"✅ **{ksn}** → **{dsn}** → **{status}** sponsor of **{SPONSORABLE}** (marked **private**)."
-                    )
-
-        return await ctx.send(
-            f"❌ **{target}** does not appear as a sponsor of **{SPONSORABLE}** (current or past)."
-        )
+        return await ctx.send(f"❌ **{target}** does not appear as a sponsor of **{SPONSORABLE}** (current or past).")
 
     @commands.command(name="sponsorlist")
     @commands.guild_only()
     async def sponsorlist(self, ctx: commands.Context):
         """
-        List all *public* sponsors (current & past) from the API,
-        and show private counts (we never list private usernames).
-        Usage: [p]sponsorlist
+        List all *public* sponsors (current & past) and show private counts (no private names printed).
         """
+        self._ensure_pat()
         if not self._pat:
             return await self._send_pat_error(ctx)
 
@@ -168,38 +170,35 @@ class SponsorCheck(commands.Cog):
             mylogger.exception("Unexpected GitHub API error in sponsorlist()")
             return await ctx.send(f"⚠️ GitHub API error: `{e}`")
 
-        lines: List[str] = []
-        lines.append(f"**Public sponsors for {SPONSORABLE}** (from GitHub API):")
-        lines.append(
-            f"- Current sponsors: **{len(curr_pub) + len(curr_priv)}**  (public: **{len(curr_pub)}**, private: **{len(curr_priv)}**)")
-        lines.append(
-            f"- Past sponsors: **{len(past_pub) + len(past_priv)}**  (public: **{len(past_pub)}**, private: **{len(past_priv)}**)")
-        lines.append("")
-        lines.append("**Current (public usernames):**")
-        lines.append(", ".join(sorted(curr_pub, key=str.lower)) if curr_pub else "—")
-        lines.append("")
-        lines.append("**Past (public usernames):**")
-        lines.append(", ".join(sorted(past_pub, key=str.lower)) if past_pub else "—")
-        lines.append("")
-        lines.append("Private sponsors are intentionally not listed by name.")
-
+        lines = [
+            f"**Public sponsors for {SPONSORABLE}** (GitHub API):",
+            f"- Current sponsors: **{len(curr_pub) + len(curr_priv)}**  (public: **{len(curr_pub)}**, private: **{len(curr_priv)}**)",
+            f"- Past sponsors: **{len(past_pub) + len(past_priv)}**  (public: **{len(past_pub)}**, private: **{len(past_priv)}**)",
+            "",
+            "**Current (public usernames):**",
+            ", ".join(sorted(curr_pub, key=str.lower)) if curr_pub else "—",
+            "",
+            "**Past (public usernames):**",
+            ", ".join(sorted(past_pub, key=str.lower)) if past_pub else "—",
+            "",
+            "Private sponsors are intentionally not listed by name.",
+        ]
         await self._send_report(ctx, lines)
 
     @commands.command(name="sponsorreport")
     @commands.guild_only()
     async def sponsorreport(self, ctx: commands.Context, limit: int = 2000):
         """
-        Cross-check guild members with the 'Sponsor' role against:
+        Cross-check the guild Sponsor role vs:
           - API public sponsors (current ∪ past)
-          - API private sponsors (current ∪ past) — counted, used for matching, not printed
-          - Manual verified-private allow-list (IDs/usernames) as backstop
-        Usage: [p]sponsorreport [limit-to-print]
+          - API private sponsors (current ∪ past) [used for matching; not printed]
+          - Manual verified-private allow-list
         """
+        self._ensure_pat()
         if not self._pat:
             return await self._send_pat_error(ctx)
 
         limit = max(1, min(5000, limit))
-
         role = ctx.guild.get_role(SPONSOR_ROLE_ID)
         if not role:
             mylogger.error(f"Sponsor role id {SPONSOR_ROLE_ID} not found in guild.")
@@ -214,13 +213,11 @@ class SponsorCheck(commands.Cog):
             mylogger.exception("Unexpected GitHub API error in sponsorreport()")
             return await ctx.send(f"⚠️ GitHub API error: `{e}`")
 
-        # Unions and counts
         public_union = {u.lower() for u in (curr_pub | past_pub)}
         private_union = {u.lower() for u in (curr_priv | past_priv)}
         public_union_n = len(public_union)
         private_union_n = len(private_union)
 
-        # Counts per section
         current_total = len(curr_pub) + len(curr_priv)
         past_total = len(past_pub) + len(past_priv)
 
@@ -232,7 +229,6 @@ class SponsorCheck(commands.Cog):
         matched_private_count = 0
 
         verified_usernames = {u.lower() for u in VERIFIED_PRIVATE_USERNAMES}
-        # Add any verified usernames we can resolve to IDs:
         verified_expected_ids = set(VERIFIED_PRIVATE_IDS)
         for gm in ctx.guild.members:
             if gm.name.lower() in verified_usernames:
@@ -268,8 +264,7 @@ class SponsorCheck(commands.Cog):
                 else:
                     missing_role_verified.append(f"- <Unknown user id `{vid}`>")
 
-        # Header math exactly per your spec:
-        # Unmatched (server ↔ public or private) = (public_union + private_union) − matched_public
+        # Header math per your spec
         unmatched_union = max(0, (public_union_n + private_union_n) - matched_public_count)
 
         header = [
@@ -318,28 +313,52 @@ class SponsorCheck(commands.Cog):
         await self._send_report(ctx, header + body)
 
     # ---------------- GitHub API helpers ----------------
+    def _load_pat(self, initial: bool = False, force: bool = False) -> None:
+        """Load PAT from env or file. Env wins. If force=True, always re-read."""
+        # If not forcing and we already have a PAT, keep it.
+        if self._pat and not force:
+            return
 
-    def _load_pat(self) -> Optional[str]:
-        pat = os.environ.get("GITHUB_PAT")
-        if pat:
+        pat_env = os.environ.get("GITHUB_PAT")
+        if pat_env:
+            self._pat = pat_env.strip()
+            self._pat_source = "env"
             mylogger.info("Loaded GitHub PAT from environment.")
-            return pat.strip()
+            return
+
+        # Try file
         try:
             with open(PAT_FILE, "r", encoding="utf-8") as f:
-                pat = f.read().strip()
-            if pat:
+                token = f.read().strip()
+            if token:
+                self._pat = token
+                self._pat_source = "file"
                 mylogger.info(f"Loaded GitHub PAT from file: {PAT_FILE}")
-                return pat
+                return
         except FileNotFoundError:
-            mylogger.warning("No GitHub PAT found: set GITHUB_PAT or create PAT file.")
+            msg = "No GitHub PAT file found; API needs env GITHUB_PAT or the PAT file."
+            if initial:
+                mylogger.info(msg)
+            else:
+                mylogger.warning(msg)
         except Exception as e:
             mylogger.error(f"Failed to read PAT file: {e}")
-        return None
+
+        self._pat = None
+        self._pat_source = None
+
+    def _ensure_pat(self) -> None:
+        """
+        Ensure we have a PAT loaded. If missing, try to load again (e.g., after creating the file).
+        Note: env vars won't update unless the process restarts; we still check in case a wrapper injected it.
+        """
+        if not self._pat:
+            self._load_pat(initial=False, force=True)
 
     async def _fetch_all_sponsors(self) -> Tuple[Set[str], Set[str], Set[str], Set[str]]:
         """
-        Return (current_public, current_private, past_public, past_private).
-        Uses GraphQL with includePrivate:true, activeOnly:false and paginates to exhaustion.
+        Return (current_public, current_private, past_public, past_private) via GraphQL,
+        includePrivate:true, activeOnly:false; paginated to exhaustion.
         """
         if not self._pat:
             raise GitHubAuthError("missing_pat", "GitHub token not configured")
@@ -380,20 +399,18 @@ class SponsorCheck(commands.Cog):
                     status = resp.status
                     text = await resp.text()
 
-                    # Handle coarse HTTP errors with useful messages
                     if status == 401:
                         raise GitHubAuthError("unauthorized", "Bad credentials (token invalid/expired/revoked).")
                     if status == 403:
-                        raise GitHubAuthError("forbidden", "Permission denied (missing 'Sponsors' scope or access).")
+                        raise GitHubAuthError("forbidden",
+                                              "Permission denied (insufficient scopes/access to Sponsors API).")
                     if status >= 400:
                         raise GitHubAuthError("http_error", f"HTTP {status}: {text[:200]}")
 
                     data = await resp.json()
 
-                # GraphQL-level errors (valid HTTP but auth/scopes/etc failed)
                 if "errors" in data and data["errors"]:
                     msg = "; ".join(err.get("message", "unknown") for err in data["errors"])
-                    # Common GraphQL auth-ish messages
                     if "Bad credentials" in msg:
                         raise GitHubAuthError("unauthorized", "Bad credentials (token invalid/expired/revoked).")
                     if "Resource not accessible by integration" in msg or "Insufficient scopes" in msg:
@@ -411,7 +428,6 @@ class SponsorCheck(commands.Cog):
                         continue
                     priv = (n.get("privacyLevel") or "").upper()
                     is_active = bool(n.get("isActive"))
-
                     if is_active:
                         (curr_priv if priv == "PRIVATE" else curr_pub).add(sponsor)
                     else:
@@ -425,16 +441,8 @@ class SponsorCheck(commands.Cog):
 
         return curr_pub, curr_priv, past_pub, past_priv
 
-    # ---------------- Local matching helpers ----------------
-
+    # ---------------- Utilities ----------------
     def _gh_candidates_from_names(self, ksn: str, dsn: str, override: Optional[str]) -> List[str]:
-        """
-        Build GH username candidates from:
-          - override (if provided)
-          - DSN (Discord username)
-          - KSN (server display name)
-        """
-
         def norm(s: Optional[str]) -> str:
             if not s:
                 return ""
@@ -443,20 +451,17 @@ class SponsorCheck(commands.Cog):
             return "".join(ch for ch in s if ch.isalnum() or ch == "-")
 
         cands: List[str] = []
-        raw = [override or "", dsn or "", ksn or ""]
-        for r in raw:
-            base = norm(r)
+        for raw in (override or "", dsn or "", ksn or ""):
+            base = norm(raw)
             if base and base not in cands:
                 cands.append(base)
-            # digits-stripped tail (e.g., "bullmoose20" -> "bullmoose")
             if base:
                 stripped = base.rstrip("0123456789")
                 if stripped and stripped != base and stripped not in cands:
                     cands.append(stripped)
-            # tail after separators
             for sep in ("|", "·", "-", "—", ":", "/"):
-                if sep in r:
-                    tail = norm(r.split(sep)[-1])
+                if sep in raw:
+                    tail = norm(raw.split(sep)[-1])
                     if tail and tail not in cands:
                         cands.append(tail)
                     if tail:
@@ -465,21 +470,16 @@ class SponsorCheck(commands.Cog):
                             cands.append(stripped_tail)
         return cands
 
-    # ---------------- Output helpers ----------------
-
     async def _send_report(self, ctx: commands.Context, lines: List[str], header: Optional[str] = None):
-        """Safely send a possibly-large report: paginate or attach as a timestamped .txt."""
         out_lines: List[str] = []
         if header:
-            out_lines.append(header)
-            out_lines.append("")
+            out_lines += [header, ""]
         out_lines.extend(lines)
 
-        # Chunk to stay well under 2000 char per message; try 1800 buffer.
         chunks: List[str] = []
         buf = ""
         for line in out_lines:
-            line = (line if line.endswith("\n") else line + "\n")
+            line = line if line.endswith("\n") else line + "\n"
             if len(buf) + len(line) > 1800:
                 chunks.append(buf)
                 buf = line
@@ -489,14 +489,11 @@ class SponsorCheck(commands.Cog):
             chunks.append(buf)
 
         total_len = sum(len(c) for c in chunks)
-
-        # Small: just send
         if total_len <= 3800 and len(chunks) <= 2:
             for c in chunks:
                 await ctx.send(c)
             return
 
-        # Large: attach as file (timestamped)
         text = "".join(chunks)
         bio = BytesIO(text.encode("utf-8"))
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -523,8 +520,9 @@ class SponsorCheck(commands.Cog):
 
     async def _send_pat_error(self, ctx: commands.Context):
         return await ctx.send(
-            "⚠️ GitHub token not configured. Set env `GITHUB_PAT` or create the file "
-            f"`{PAT_FILE}` with a valid PAT that has access to Sponsors."
+            "⚠️ GitHub token not configured. Set env `GITHUB_PAT` **or** create the file "
+            f"`{PAT_FILE}` with a valid PAT (with Sponsors access). Then run `[p]sponsortoken reload` "
+            "or restart the bot process if you used the environment variable."
         )
 
     async def _send_pat_auth_message(self, ctx: commands.Context, e: "GitHubAuthError"):
@@ -537,6 +535,14 @@ class SponsorCheck(commands.Cog):
             "schema_error": f"Unexpected API response.",
         }.get(e.code, f"GitHub API error: {e.detail}")
         return await ctx.send(f"⚠️ {readable}")
+
+    @staticmethod
+    def _mask(token: str, keep: int = 4) -> str:
+        if not token:
+            return ""
+        if len(token) <= keep:
+            return "*" * len(token)
+        return token[:keep] + "*" * (len(token) - keep)
 
 
 class GitHubAuthError(RuntimeError):
