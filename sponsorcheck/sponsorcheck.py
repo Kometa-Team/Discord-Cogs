@@ -914,9 +914,9 @@ class SponsorCheck(commands.Cog):
             "**Actions & reconciliation**\n"
             f"➕ **Grant Sponsor role:** **{len(grant_role)}**\n"
             f"✅ **OK (current + role):** **{len(ok_role)}**\n"
-            f"🟡 **OK (past + role):** **{len(lapsed_role)}**\n"
-            f"⚠️ **Has role but never sponsored (or needs mapping):** **{len(never_role)}**\n"
-            f"🚪 **Current sponsors not in server (GitHub):** **{len(current_not_in_server)}**"
+            f"🕓 **OK (past + role):** **{len(lapsed_role)}**\n"
+            f"❌ **Has role but never sponsored (or needs mapping):** **{len(never_role)}**\n"
+            f"⚠️ **Current sponsors not in server (GitHub):** **{len(current_not_in_server)}**"
         )
 
         # Always attach the full text file
