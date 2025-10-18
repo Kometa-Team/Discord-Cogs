@@ -231,10 +231,21 @@ class MasterPager(discord.ui.View):
         await self.render(interaction)
 
     async def _on_close(self, interaction: discord.Interaction):
+        """Close like Logscan: disable or delete."""
         for c in self.children:
             if isinstance(c, (discord.ui.Button, discord.ui.Select)):
                 c.disabled = True
-        await self._safe_edit(interaction, view=self)
+
+        # Prefer deletion (matches your Logscan UX). If it fails, just disable controls.
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+            await interaction.message.delete()
+        except Exception:
+            try:
+                await interaction.message.edit(view=self)
+            except Exception as e:
+                logging.getLogger("sponsorcheck").exception("Pager close failed: %s", e)
 
     # ----- Rendering / updating -----
     def _chunk_to_pages(self, items: List[str]) -> List[str]:
@@ -278,7 +289,8 @@ class MasterPager(discord.ui.View):
         return e
 
     async def render(self, interaction: discord.Interaction):
-        """Rebuild dropdown defaults and update message safely (prevents 'interaction failed')."""
+        """Rebuild dropdown defaults and update message safely (Logscan-style)."""
+        # Recreate the Select so the 'default' option highlights correctly
         try:
             self.remove_item(self.section_select)
         except Exception:
@@ -286,7 +298,27 @@ class MasterPager(discord.ui.View):
         self.section_select = SectionSelect(self, self.section_titles, self.section_index)
         self.add_item(self.section_select)
 
-        await self._safe_edit(interaction, embed=self._make_embed(), view=self)
+        embed = self._make_embed()
+
+        # --- Logscan-style safe update ---
+        try:
+            if not interaction.response.is_done():
+                # Ack the click first; avoids 'This interaction failed'
+                await interaction.response.defer()
+        except Exception:
+            # It's okay if defer fails (already acknowledged); we'll still try to edit
+            pass
+
+        try:
+            await interaction.message.edit(embed=embed, view=self)
+        except Exception as e:
+            logging.getLogger("sponsorcheck").exception("Pager render failed: %s", e)
+            # best-effort fallback
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("Sorry, that update failed.", ephemeral=True)
+            except Exception:
+                pass
 
     async def _safe_edit(self, interaction: discord.Interaction, **kwargs):
         """
