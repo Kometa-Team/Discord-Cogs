@@ -41,6 +41,8 @@ EASTER_EGG_DESC = (
 )
 
 # ---------- Pagination / UI ----------
+# ==== BEGIN: drop-in replacement for SectionSelect / GoToPageModal / SearchModal / MasterPager ====
+
 MAX_EMBED_CHARS = 3500
 PAGE_SIZE = 30
 VIEW_TIMEOUT_SECONDS = 180
@@ -49,9 +51,17 @@ BULLET = "• "
 
 class SectionSelect(discord.ui.Select):
     def __init__(self, view: "MasterPager", sections: List[str], current: int):
-        options = [discord.SelectOption(label=title, value=str(i), default=(i == current))
-                   for i, title in enumerate(sections)]
-        super().__init__(placeholder="Jump to section…", min_values=1, max_values=1, options=options, row=0)
+        options = [
+            discord.SelectOption(label=title, value=str(i), default=(i == current))
+            for i, title in enumerate(sections)
+        ]
+        super().__init__(
+            placeholder="Jump to section…",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
         self.master: "MasterPager" = view
 
     async def callback(self, interaction: discord.Interaction):
@@ -62,8 +72,11 @@ class SectionSelect(discord.ui.Select):
 
 class GoToPageModal(discord.ui.Modal, title="Jump to page"):
     page_number = discord.ui.TextInput(
-        label="Enter page number (1..N)", style=discord.TextStyle.short,
-        required=True, max_length=6, placeholder="e.g. 3"
+        label="Enter page number (1..N)",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=6,
+        placeholder="e.g. 3",
     )
 
     def __init__(self, master: "MasterPager"):
@@ -83,8 +96,11 @@ class GoToPageModal(discord.ui.Modal, title="Jump to page"):
 
 class SearchModal(discord.ui.Modal, title="Search list"):
     query = discord.ui.TextInput(
-        label="Find (case-insensitive substring)", style=discord.TextStyle.short,
-        required=True, max_length=50, placeholder="e.g. dark, moose, 1337…"
+        label="Find (case-insensitive substring)",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=50,
+        placeholder="e.g. dark, moose, 1337…",
     )
 
     def __init__(self, master: "MasterPager"):
@@ -95,22 +111,31 @@ class SearchModal(discord.ui.Modal, title="Search list"):
         q = str(self.query).strip().lower()
         if not q:
             return await self.master.render(interaction)
+
+        # Build a temporary "Search results" section from all non-summary items.
         results: List[str] = []
-        # search all non-summary sections
         for sec_i, items in enumerate(self.master.orig_items):
             if sec_i == 0:
-                continue
+                continue  # skip summary
             for s in items:
                 if q in s.lower():
                     results.append(s)
+
         if not results:
             results = ["— no matches —"]
+
         self.master.activate_search(q, results)
         await self.master.render(interaction)
 
 
 class MasterPager(discord.ui.View):
-    """Master embed with dropdown + real buttons (first/prev/next/last/goto/search/clear/close)."""
+    """
+    Master embed with:
+      - Section dropdown
+      - Buttons: ⏮ ◀ ▶ ⏭ 🔢 (goto) 🔎 (search) 🧹 (clear search) 🗑 (close)
+      - Per-section pages with PAGE_SIZE items
+      - Safe edits (no 'interaction failed')
+    """
 
     def __init__(
             self,
@@ -127,6 +152,7 @@ class MasterPager(discord.ui.View):
         self.icon_url = icon_url
         self.color = color
 
+        # Keep originals for reset / search
         self.section_titles: List[str] = [t for t, _ in sections]
         self.orig_items: List[List[str]] = [lst[:] for _, lst in sections]
         self.pages: List[List[str]] = [self._chunk_to_pages(items) for _, items in sections]
@@ -136,11 +162,11 @@ class MasterPager(discord.ui.View):
         self.search_active = False
         self.search_label: Optional[str] = None
 
-        # components
+        # Dropdown
         self.section_select = SectionSelect(self, self.section_titles, self.section_index)
         self.add_item(self.section_select)
 
-        # nav buttons (created as real Button instances)
+        # Buttons (real instances, not decorators)
         self.btn_first = discord.ui.Button(emoji="⏮", style=discord.ButtonStyle.secondary, row=1)
         self.btn_prev = discord.ui.Button(emoji="◀", style=discord.ButtonStyle.secondary, row=1)
         self.btn_next = discord.ui.Button(emoji="▶", style=discord.ButtonStyle.secondary, row=1)
@@ -151,7 +177,7 @@ class MasterPager(discord.ui.View):
         self.btn_clear = discord.ui.Button(emoji="🧹", style=discord.ButtonStyle.secondary, row=2)
         self.btn_close = discord.ui.Button(emoji="🗑", style=discord.ButtonStyle.danger, row=2)
 
-        # bind callbacks
+        # Bind callbacks
         self.btn_first.callback = self._on_first
         self.btn_prev.callback = self._on_prev
         self.btn_next.callback = self._on_next
@@ -161,12 +187,14 @@ class MasterPager(discord.ui.View):
         self.btn_clear.callback = self._on_clear
         self.btn_close.callback = self._on_close
 
-        # add to view
-        for b in (self.btn_first, self.btn_prev, self.btn_next, self.btn_last,
-                  self.btn_goto, self.btn_search, self.btn_clear, self.btn_close):
+        # Add to view
+        for b in (
+                self.btn_first, self.btn_prev, self.btn_next, self.btn_last,
+                self.btn_goto, self.btn_search, self.btn_clear, self.btn_close
+        ):
             self.add_item(b)
 
-    # ---- interaction permissions ----
+    # ----- Permissions: only invoker can click -----
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.owner_id
 
@@ -175,7 +203,7 @@ class MasterPager(discord.ui.View):
             if isinstance(c, (discord.ui.Button, discord.ui.Select)):
                 c.disabled = True
 
-    # ---- callbacks ----
+    # ----- Navigation callbacks -----
     async def _on_first(self, interaction: discord.Interaction):
         self.page_index = 0
         await self.render(interaction)
@@ -206,9 +234,9 @@ class MasterPager(discord.ui.View):
         for c in self.children:
             if isinstance(c, (discord.ui.Button, discord.ui.Select)):
                 c.disabled = True
-        await interaction.response.edit_message(view=self)
+        await self._safe_edit(interaction, view=self)
 
-    # ---- utilities ----
+    # ----- Rendering / updating -----
     def _chunk_to_pages(self, items: List[str]) -> List[str]:
         if not items:
             return ["—"]
@@ -234,7 +262,11 @@ class MasterPager(discord.ui.View):
 
     def _make_embed(self) -> discord.Embed:
         body = self.pages[self.section_index][self.page_index]
-        e = discord.Embed(title=self._current_title(), description=body, color=self.color)
+        e = discord.Embed(
+            title=self._current_title(),
+            description=body,
+            color=self.color,
+        )
         e.set_author(name="SponsorCheck")
         if self.icon_url:
             try:
@@ -246,16 +278,38 @@ class MasterPager(discord.ui.View):
         return e
 
     async def render(self, interaction: discord.Interaction):
-        # re-mount dropdown with current defaults
-        # (Discord needs a fresh Select so the current option shows selected)
+        """Rebuild dropdown defaults and update message safely (prevents 'interaction failed')."""
         try:
             self.remove_item(self.section_select)
         except Exception:
             pass
         self.section_select = SectionSelect(self, self.section_titles, self.section_index)
         self.add_item(self.section_select)
-        await interaction.response.edit_message(embed=self._make_embed(), view=self)
 
+        await self._safe_edit(interaction, embed=self._make_embed(), view=self)
+
+    async def _safe_edit(self, interaction: discord.Interaction, **kwargs):
+        """
+        Edit the message safely:
+          - If response is unused → interaction.response.edit_message(...)
+          - Else → interaction.message.edit(...)
+        This avoids 'This interaction failed' when the message wasn't created as an interaction response.
+        """
+        try:
+            if interaction.response.is_done():
+                await interaction.message.edit(**kwargs)
+            else:
+                await interaction.response.edit_message(**kwargs)
+        except Exception as e:
+            logging.getLogger("sponsorcheck").exception("View edit failed: %s", e)
+            # Try to at least acknowledge errors without exploding:
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("Sorry, that update failed.", ephemeral=True)
+            except Exception:
+                pass
+
+    # ----- Search helpers -----
     def activate_search(self, query: str, results: List[str]):
         self.search_active = True
         self.search_label = query
