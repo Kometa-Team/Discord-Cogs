@@ -307,8 +307,8 @@ class MasterPager(discord.ui.View):
         return base
 
     def _resolve_color(self) -> discord.Color:
-        # Search page uses neutral; else per-section color if provided; else default.
-        if self.search_active:
+        # Only use gray when actually on search results section
+        if self.search_active and self.section_index == len(self.orig_items):
             return discord.Color.light_grey()
         if 0 <= self.section_index < len(self.section_colors):
             return self.section_colors[self.section_index]
@@ -957,11 +957,11 @@ class SponsorCheck(commands.Cog):
         # Your requested colors (in this exact order)
         section_colors = [
             discord.Color.blurple(),  # Summary
-            discord.Color.green(),  # Grant Sponsor role
-            discord.Color.orange(),  # OK (current + role)
+            discord.Color.orange(),  # Grant Sponsor role
+            discord.Color.green(),  # OK (current + role)
             discord.Color.green(),  # OK (past + role)
-            discord.Color.yellow(),  # Has role but never sponsored
-            discord.Color.red(),  # Current sponsors not in server
+            discord.Color.red(),  # Has role but never sponsored
+            discord.Color.yellow(),  # Current sponsors not in server
         ]
 
         view = MasterPager(
