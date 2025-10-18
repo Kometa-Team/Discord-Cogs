@@ -47,7 +47,7 @@ VIEW_TIMEOUT_SECONDS = 180
 BULLET = "• "
 
 
-# ===== UI components (clean, one-pass) =====
+# ===== UI components (colors per section + search shows location) =====
 
 class SectionSelect(discord.ui.Select):
     def __init__(self, view: "MasterPager", sections: List[str], current: int):
@@ -92,7 +92,7 @@ class SearchModal(discord.ui.Modal, title="Search list"):
         style=discord.TextStyle.short,
         required=True,
         max_length=50,
-        placeholder="e.g. dark, moose, 1337…",
+        placeholder="e.g. moose, darth, 1337…",
     )
 
     def __init__(self, master: "MasterPager"):
@@ -104,14 +104,8 @@ class SearchModal(discord.ui.Modal, title="Search list"):
         if not q:
             return await self.master.render(interaction)
 
-        results: List[str] = []
-        for sec_i, items in enumerate(self.master.orig_items):
-            if sec_i == 0:  # skip summary
-                continue
-            for s in items:
-                if q in s.lower():
-                    results.append(s)
-
+        # Build results with section/page location hints
+        results = self.master.build_search_results(q)
         if not results:
             results = ["— no matches —"]
 
@@ -120,7 +114,7 @@ class SearchModal(discord.ui.Modal, title="Search list"):
 
 
 class MasterPager(discord.ui.View):
-    """Dropdown + real buttons; safe defer→edit; buttons created once."""
+    """Dropdown + real buttons; safe defer→edit; color per section; search shows section/page."""
 
     def __init__(
             self,
@@ -129,14 +123,17 @@ class MasterPager(discord.ui.View):
             title_prefix: str,
             sections: List[Tuple[str, List[str]]],  # [(title, items)]
             icon_url: Optional[str],
-            color: discord.Color,
+            color: discord.Color,  # default/fallback color
+            section_colors: Optional[List[discord.Color]] = None,  # optional color per section
     ):
         super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
         self.owner_id = owner_id
         self.title_prefix = title_prefix
         self.icon_url = icon_url
         self.color = color
+        self.section_colors = section_colors or []
 
+        # originals + paginated text chunks
         self.section_titles: List[str] = [t for t, _ in sections]
         self.orig_items: List[List[str]] = [lst[:] for _, lst in sections]
         self.pages: List[List[str]] = [self._chunk_to_pages(items) for _, items in sections]
@@ -252,7 +249,40 @@ class MasterPager(discord.ui.View):
             except Exception:
                 pass
 
-    # Helpers
+    # ---------- Search helpers with location ----------
+    def compute_page_number(self, section_idx: int, item_idx: int) -> int:
+        """Given a section and the index of an item in orig_items, return 1-based page number."""
+        items = self.orig_items[section_idx]
+        page = 1
+        count = 0
+        buf_len = 0
+        for i, s in enumerate(items):
+            line_len = len(f"{BULLET}{s}\n")
+            if count >= PAGE_SIZE or buf_len + line_len > MAX_EMBED_CHARS:
+                page += 1
+                count = 1
+                buf_len = line_len
+            else:
+                count += 1
+                buf_len += line_len
+            if i == item_idx:
+                return page
+        return 1
+
+    def build_search_results(self, q: str) -> List[str]:
+        """Return lines annotated with section and page (e.g., 'name — in OK (current + role), page 2')."""
+        out: List[str] = []
+        for sec_i, items in enumerate(self.orig_items):
+            if sec_i == 0:  # skip Summary
+                continue
+            title = self.section_titles[sec_i]
+            for idx, s in enumerate(items):
+                if q in s.lower():
+                    page = self.compute_page_number(sec_i, idx)
+                    out.append(f"{s}  — _in {title}, page {page}_")
+        return out
+
+    # ---------- Embed building ----------
     def _chunk_to_pages(self, items: List[str]) -> List[str]:
         if not items:
             return ["—"]
@@ -276,9 +306,17 @@ class MasterPager(discord.ui.View):
             base += f" (search: {self.search_label})"
         return base
 
+    def _resolve_color(self) -> discord.Color:
+        # Search page uses neutral; else per-section color if provided; else default.
+        if self.search_active:
+            return discord.Color.light_grey()
+        if 0 <= self.section_index < len(self.section_colors):
+            return self.section_colors[self.section_index]
+        return self.color
+
     def _make_embed(self) -> discord.Embed:
         body = self.pages[self.section_index][self.page_index]
-        e = discord.Embed(title=self._current_title(), description=body, color=self.color)
+        e = discord.Embed(title=self._current_title(), description=body, color=self._resolve_color())
         e.set_author(name="SponsorCheck")
         if self.icon_url:
             try:
@@ -289,6 +327,7 @@ class MasterPager(discord.ui.View):
             text=f"Page {self.page_index + 1}/{len(self.pages[self.section_index])} • Buttons disable after {VIEW_TIMEOUT_SECONDS // 60}m")
         return e
 
+    # search mode becomes a temporary extra section at the end
     def activate_search(self, query: str, results: List[str]):
         self.search_active = True
         self.search_label = query
@@ -296,6 +335,8 @@ class MasterPager(discord.ui.View):
         if len(self.pages) == len(self.orig_items):
             self.section_titles.append(title)
             self.pages.append(self._chunk_to_pages(results))
+            if self.section_colors:
+                self.section_colors.append(discord.Color.light_grey())
         else:
             self.section_titles[-1] = title
             self.pages[-1] = self._chunk_to_pages(results)
@@ -310,6 +351,8 @@ class MasterPager(discord.ui.View):
         if len(self.pages) > len(self.orig_items):
             self.pages.pop()
             self.section_titles.pop()
+            if self.section_colors and len(self.section_colors) > len(self.orig_items):
+                self.section_colors.pop()
         self.section_index = 0
         self.page_index = 0
 
@@ -558,7 +601,10 @@ class SponsorCheck(commands.Cog):
             if not s:
                 return ""
             s = s.strip().lstrip("@").lower().replace(" ", "").replace("_", "").replace(".", "")
-            return "".join(ch for ch in s if ch.isalnum() or ch == "-")
+            return "".join(ch for ch in s if alnum(ch) or ch == "-")
+
+        def alnum(ch: str) -> bool:
+            return ("a" <= ch <= "z") or ("0" <= ch <= "9")
 
         cands: List[str] = []
         for raw in (override or "", dsn or "", ksn or ""):
@@ -766,12 +812,20 @@ class SponsorCheck(commands.Cog):
             except Exception:
                 pass
 
+        # Color-coding for sponsorlist (simple & intuitive)
+        section_colors = [
+            discord.Color.blurple(),  # Summary
+            discord.Color.green(),  # Current public
+            discord.Color.orange(),  # Past public
+        ]
+
         view = MasterPager(
             owner_id=ctx.author.id,
             title_prefix="Sponsor list",
             sections=sections,
             icon_url=icon_url,
-            color=discord.Color.blurple(),
+            color=discord.Color.blurple(),  # fallback
+            section_colors=section_colors,
         )
         await ctx.send(embed=view._make_embed(), view=view)
 
@@ -900,12 +954,23 @@ class SponsorCheck(commands.Cog):
             ("Current sponsors not in server (GitHub usernames)", current_not_in_server),
         ]
 
+        # Your requested colors (in this exact order)
+        section_colors = [
+            discord.Color.blurple(),  # Summary
+            discord.Color.green(),  # Grant Sponsor role
+            discord.Color.orange(),  # OK (current + role)
+            discord.Color.green(),  # OK (past + role)
+            discord.Color.yellow(),  # Has role but never sponsored
+            discord.Color.red(),  # Current sponsors not in server
+        ]
+
         view = MasterPager(
             owner_id=ctx.author.id,
             title_prefix="Sponsor report",
             sections=sections,
             icon_url=icon_url,
-            color=discord.Color.blurple(),
+            color=discord.Color.blurple(),  # fallback
+            section_colors=section_colors,
         )
         await ctx.send(embed=view._make_embed(), view=view)
 
