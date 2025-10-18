@@ -559,6 +559,45 @@ class SponsorCheck(commands.Cog):
     def _embed_err(self, t, d, **kw):  return self._embed(t, d, color=discord.Color.red(), **kw)
     def _embed_info(self, t, d, **kw): return self._embed(t, d, color=discord.Color.blurple(), **kw)
 
+    # ---------- Logging helpers ----------
+    def _tag_user(self, u: discord.abc.User) -> str:
+        if not u:
+            return "Unknown"
+        disc = getattr(u, "discriminator", None)
+        if disc and disc != "0":
+            return f"{u.name}#{disc}"
+        return f"{u.name}#0"
+
+    def _channel_display(self, ch: Optional[discord.abc.GuildChannel]) -> str:
+        if isinstance(ch, discord.TextChannel):
+            return ch.name
+        if isinstance(ch, discord.Thread):
+            try:
+                parent = ch.parent.name if ch.parent else "Unknown"
+                return f"{parent}/{ch.name}"
+            except Exception:
+                return ch.name or "Thread"
+        if hasattr(ch, "name"):
+            return getattr(ch, "name") or ch.__class__.__name__
+        return "Direct Message"
+
+    def _log_invoke_ctx(self, ctx: commands.Context, command_name: str) -> None:
+        author = self._tag_user(ctx.author) if ctx.author else "Unknown"
+        guild = ctx.guild.name if ctx.guild else "Direct Message"
+        channel = self._channel_display(ctx.channel) if ctx.channel else "Direct Message"
+        gid = ctx.guild.id if ctx.guild else "N/A"
+        cid = ctx.channel.id if ctx.channel else "N/A"
+        mylogger.info(f"{command_name} invoked by {author} in {guild}/{channel} (ID: {gid}/{cid})")
+
+    def _log_invoke_inter(self, interaction: discord.Interaction, command_name: str) -> None:
+        user = self._tag_user(interaction.user) if interaction.user else "Unknown"
+        guild = interaction.guild.name if interaction.guild else "Direct Message"
+        channel_obj = getattr(interaction, "channel", None)
+        channel = self._channel_display(channel_obj) if channel_obj else "Direct Message"
+        gid = interaction.guild.id if interaction.guild else "N/A"
+        cid = getattr(channel_obj, "id", "N/A")
+        mylogger.info(f"{command_name} invoked by {user} in {guild}/{channel} (ID: {gid}/{cid})")
+
     # ---------- Member / avatar utils ----------
     async def _github_avatar(self, login: str) -> Optional[str]:
         if not login:
@@ -762,15 +801,16 @@ class SponsorCheck(commands.Cog):
         return cands
 
     async def _sponsor_core(self, ctx: commands.Context, username: str):
+        self._log_invoke_ctx(ctx, "Sponsor")
         self._ensure_pat()
         if not self._pat:
-            return await ctx.send(self._embed_err("GitHub token", "Not configured.", guild=ctx.guild))
+            return await ctx.send(embed=self._embed_err("GitHub token", "Not configured.", guild=ctx.guild))
 
         gh_map, verified_ids, verified_names = await self._get_maps(ctx.guild)
 
         target = (username or "").lstrip("@").strip()
         if not target:
-            return await ctx.send(self._embed_info("Usage", "Try `/sponsor bullmoose20`.", guild=ctx.guild))
+            return await ctx.send(embed=self._embed_info("Usage", "Try `/sponsor bullmoose20`.", guild=ctx.guild))
 
         # Easter egg
         if target.lower() in EASTER_EGG_NAMES:
@@ -785,10 +825,10 @@ class SponsorCheck(commands.Cog):
         try:
             curr_pub, curr_priv, past_pub, past_priv = await self._fetch_all_sponsors()
         except GitHubAuthError as e:
-            return await ctx.send(self._embed_err("GitHub API", e.detail, guild=ctx.guild))
+            return await ctx.send(embed=self._embed_err("GitHub API", e.detail, guild=ctx.guild))
         except Exception as e:
             mylogger.exception("sponsor(): API failure")
-            return await ctx.send(self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
+            return await ctx.send(embed=self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
 
         current_public = {u.lower() for u in curr_pub}
         past_public = {u.lower() for u in past_pub}
@@ -809,6 +849,7 @@ class SponsorCheck(commands.Cog):
             if possible_member:
                 ok, msg = await self._try_grant_role(ctx.guild, possible_member)
                 em.add_field(name="Role action", value=msg, inline=False)
+                mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id, possible_member.id, ok, msg)
             return await ctx.send(embed=em)
 
         # Direct private
@@ -820,6 +861,7 @@ class SponsorCheck(commands.Cog):
             if possible_member:
                 ok, msg = await self._try_grant_role(ctx.guild, possible_member)
                 em.add_field(name="Role action", value=msg, inline=False)
+                mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id, possible_member.id, ok, msg)
             return await ctx.send(embed=em)
 
         # KSN/DSN → GH candidates
@@ -829,6 +871,7 @@ class SponsorCheck(commands.Cog):
             dsn = (candidate_member.name or "").strip()
             override = gh_map.get(str(candidate_member.id))
             candidates = self._gh_candidates_from_names(ksn, dsn, override)
+            mylogger.debug("Heuristic candidates for %r → %s", (ksn, dsn, override), candidates)
 
             for cand in candidates:
                 lc = cand.lower()
@@ -839,6 +882,7 @@ class SponsorCheck(commands.Cog):
                     self._attach_person_avatars(em, candidate_member, gh_avatar)
                     ok, msg = await self._try_grant_role(ctx.guild, candidate_member)
                     em.add_field(name="Role action", value=msg, inline=False)
+                    mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id, candidate_member.id, ok, msg)
                     return await ctx.send(embed=em)
 
             for cand in candidates:
@@ -850,6 +894,7 @@ class SponsorCheck(commands.Cog):
                     self._attach_person_avatars(em, candidate_member, None)
                     ok, msg = await self._try_grant_role(ctx.guild, candidate_member)
                     em.add_field(name="Role action", value=msg, inline=False)
+                    mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id, candidate_member.id, ok, msg)
                     return await ctx.send(embed=em)
 
         # Not found → if user already has the role, warn about mismatch
@@ -891,16 +936,17 @@ class SponsorCheck(commands.Cog):
         return await ctx.send(embed=em)
 
     async def _sponsorlist_core(self, ctx: commands.Context):
+        self._log_invoke_ctx(ctx, "Sponsorlist")
         self._ensure_pat()
         if not self._pat:
-            return await ctx.send(self._embed_err("GitHub token", "Not configured.", guild=ctx.guild))
+            return await ctx.send(embed=self._embed_err("GitHub token", "Not configured.", guild=ctx.guild))
         try:
             curr_pub, curr_priv, past_pub, past_priv = await self._fetch_all_sponsors()
         except GitHubAuthError as e:
-            return await ctx.send(self._embed_err("GitHub API", e.detail, guild=ctx.guild))
+            return await ctx.send(embed=self._embed_err("GitHub API", e.detail, guild=ctx.guild))
         except Exception as e:
             mylogger.exception("sponsorlist(): API failure")
-            return await ctx.send(self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
+            return await ctx.send(embed=self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
 
         counts = (
             "**Overview**\n"
@@ -957,23 +1003,26 @@ class SponsorCheck(commands.Cog):
         await ctx.send(embed=view._make_embed(), view=view)
 
     async def _sponsorreport_core(self, ctx: commands.Context, limit: int):
+        self._log_invoke_ctx(ctx, "Sponsorreport")
         self._ensure_pat()
         if not self._pat:
-            return await ctx.send(self._embed_err("GitHub token", "Not configured.", guild=ctx.guild))
+            return await ctx.send(embed=self._embed_err("GitHub token", "Not configured.", guild=ctx.guild))
 
         role = ctx.guild.get_role(SPONSOR_ROLE_ID)
         if not role:
-            return await ctx.send(self._embed_err("Sponsor role not found", f"ID `{SPONSOR_ROLE_ID}`", guild=ctx.guild))
+            return await ctx.send(embed=self._embed_err("Sponsor role not found", f"ID `{SPONSOR_ROLE_ID}`", guild=ctx.guild))
 
         gh_map, verified_ids, verified_names = await self._get_maps(ctx.guild)
+        mylogger.info("Mappings loaded for guild %s: %d map(s), %d private IDs, %d private names",
+                      ctx.guild.id, len(gh_map), len(verified_ids), len(verified_names))
 
         try:
             curr_pub, curr_priv, past_pub, past_priv = await self._fetch_all_sponsors()
         except GitHubAuthError as e:
-            return await ctx.send(self._embed_err("GitHub API", e.detail, guild=ctx.guild))
+            return await ctx.send(embed=self._embed_err("GitHub API", e.detail, guild=ctx.guild))
         except Exception as e:
             mylogger.exception("sponsorreport(): API failure")
-            return await ctx.send(self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
+            return await ctx.send(embed=self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
 
         current_all = {u.lower() for u in (curr_pub | curr_priv)}
         past_all = {u.lower() for u in (past_pub | past_priv)}
@@ -1131,17 +1180,20 @@ class SponsorCheck(commands.Cog):
     @app_commands.command(name="sponsor", description="Check a user’s GitHub sponsor status.")
     @app_commands.describe(username="GitHub or Discord name to check")
     async def sponsor_slash(self, interaction: discord.Interaction, username: str):
+        self._log_invoke_inter(interaction, "Sponsor")
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsor_core(ctx, username)
 
     @app_commands.command(name="sponsorlist", description="List public sponsors (master embed + file).")
     async def sponsorlist_slash(self, interaction: discord.Interaction):
+        self._log_invoke_inter(interaction, "Sponsorlist")
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsorlist_core(ctx)
 
     @app_commands.command(name="sponsorreport", description="Reconciliation report (summary + sections; master embed + file).")
     @app_commands.describe(limit="Max lines per section written into the attached text file (default 2000)")
     async def sponsorreport_slash(self, interaction: discord.Interaction, limit: int = 2000):
+        self._log_invoke_inter(interaction, "Sponsorreport")
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsorreport_core(ctx, limit)
 
@@ -1158,12 +1210,27 @@ class SponsorConfigGroup(app_commands.Group):
         super().__init__(name="sponsorconfig", description="Manage SponsorCheck mappings")
         self.cog = cog
 
+    def _log(self, interaction: discord.Interaction, sub: str):
+        user = interaction.user
+        guild = interaction.guild
+        ch = interaction.channel
+        author = f"{user.name}#{getattr(user, 'discriminator', '0')}" if user else "Unknown"
+        gname = guild.name if guild else "Direct Message"
+        if isinstance(ch, discord.Thread):
+            cname = f"{ch.parent.name}/{ch.name}" if ch.parent else ch.name
+        else:
+            cname = getattr(ch, "name", None) or "Direct Message"
+        gid = guild.id if guild else "N/A"
+        cid = getattr(ch, "id", "N/A")
+        mylogger.info(f"sponsorconfig/{sub} invoked by {author} in {gname}/{cname} (ID: {gid}/{cid})")
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         mem = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
         return bool(mem and _is_staff(mem))
 
     @app_commands.command(name="help", description="Show available subcommands.")
     async def help_cmd(self, interaction: discord.Interaction):
+        self._log(interaction, "help")
         text = (
             "**/sponsorconfig** — manage mappings & verified privates\n\n"
             "• **/sponsorconfig map_add**  member:<user>  github_login:<login>\n"
@@ -1189,6 +1256,7 @@ class SponsorConfigGroup(app_commands.Group):
     @app_commands.command(name="map_add", description="Map a Discord user to a GitHub login.")
     @app_commands.describe(member="Discord member", github_login="GitHub username (login)")
     async def map_add(self, interaction: discord.Interaction, member: discord.Member, github_login: str):
+        self._log(interaction, "map_add")
         gh_map, v_ids, v_names = await self.cog._get_maps(interaction.guild)
         gh_map[str(member.id)] = github_login.strip().lstrip("@")
         await self.cog._set_maps(interaction.guild, gh_map=gh_map)
@@ -1197,6 +1265,7 @@ class SponsorConfigGroup(app_commands.Group):
     @app_commands.command(name="map_remove", description="Remove a Discord→GitHub mapping.")
     @app_commands.describe(member="Discord member")
     async def map_remove(self, interaction: discord.Interaction, member: discord.Member):
+        self._log(interaction, "map_remove")
         gh_map, v_ids, v_names = await self.cog._get_maps(interaction.guild)
         if gh_map.pop(str(member.id), None) is None:
             return await interaction.response.send_message("No mapping found.", ephemeral=True)
@@ -1205,6 +1274,7 @@ class SponsorConfigGroup(app_commands.Group):
 
     @app_commands.command(name="map_list", description="List Discord→GitHub mappings.")
     async def map_list(self, interaction: discord.Interaction):
+        self._log(interaction, "map_list")
         gh_map, _, _ = await self.cog._get_maps(interaction.guild)
         if not gh_map:
             return await interaction.response.send_message("No mappings.", ephemeral=True)
@@ -1214,6 +1284,7 @@ class SponsorConfigGroup(app_commands.Group):
     @app_commands.command(name="private_add", description="Verify a private sponsor (Discord).")
     @app_commands.describe(member="Discord member (current private sponsor)")
     async def private_add(self, interaction: discord.Interaction, member: discord.Member):
+        self._log(interaction, "private_add")
         gh_map, v_ids, v_names = await self.cog._get_maps(interaction.guild)
         v_ids.add(member.id)
         v_names.add((member.name or "").lower())
@@ -1223,6 +1294,7 @@ class SponsorConfigGroup(app_commands.Group):
     @app_commands.command(name="private_remove", description="Unverify a private sponsor (Discord).")
     @app_commands.describe(member="Discord member")
     async def private_remove(self, interaction: discord.Interaction, member: discord.Member):
+        self._log(interaction, "private_remove")
         gh_map, v_ids, v_names = await self.cog._get_maps(interaction.guild)
         v_ids.discard(member.id)
         v_names.discard((member.name or "").lower())
@@ -1231,6 +1303,7 @@ class SponsorConfigGroup(app_commands.Group):
 
     @app_commands.command(name="private_list", description="List verified private sponsors.")
     async def private_list(self, interaction: discord.Interaction):
+        self._log(interaction, "private_list")
         _, v_ids, v_names = await self.cog._get_maps(interaction.guild)
         if not v_ids and not v_names:
             return await interaction.response.send_message("No verified private entries.", ephemeral=True)
@@ -1241,6 +1314,7 @@ class SponsorConfigGroup(app_commands.Group):
 
     @app_commands.command(name="export", description="Export mappings & verified lists as JSON.")
     async def export_cfg(self, interaction: discord.Interaction):
+        self._log(interaction, "export")
         async with self.cog._maps_lock:
             payload = self.cog._store
             bio = BytesIO(json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"))
@@ -1254,6 +1328,7 @@ class SponsorConfigGroup(app_commands.Group):
     @app_commands.command(name="import", description="Import mappings JSON (replaces existing).")
     @app_commands.describe(attachment="JSON exported by /sponsorconfig export")
     async def import_cfg(self, interaction: discord.Interaction, attachment: discord.Attachment):
+        self._log(interaction, "import")
         if not attachment or not attachment.filename.lower().endswith(".json"):
             return await interaction.response.send_message("Please attach a JSON file.", ephemeral=True)
         try:
