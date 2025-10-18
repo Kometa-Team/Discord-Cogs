@@ -8,8 +8,7 @@ from typing import Optional, Set, Tuple, Dict, List
 
 import aiohttp
 import discord
-from redbot.core import commands
-from discord import app_commands  # IMPORTANT: import from discord.py
+from redbot.core import commands, app_commands  # match threads.py behavior
 
 # ---------- Logging ----------
 mylogger = logging.getLogger("sponsorcheck")
@@ -32,10 +31,6 @@ VERIFIED_PRIVATE_USERNAMES: Set[str] = set()  # member.name strings (case-insens
 SPONSORABLE = "meisnate12"
 GRAPHQL_API = "https://api.github.com/graphql"
 PAT_FILE = "/opt/red-botmoose/secrets/github_pat.txt"
-
-# ---------- Slash registration ----------
-# Put your guild ID(s) here for INSTANT slash availability. Leave empty for global (slower).
-INSTANT_SLASH_GUILDS: Set[int] = {822460010649878528}  # e.g., {123456789012345678}
 
 # ---------- Easter Egg ----------
 EASTER_EGG_NAMES = {"sohjiro", "meisnate12"}
@@ -64,31 +59,7 @@ class SponsorCheck(commands.Cog):
         self._pat_source: Optional[str] = None  # "env" | "file" | None
         self._load_pat(initial=True)
 
-    # ---------- Slash sync ----------
-    async def cog_load(self) -> None:
-        try:
-            # Bind hybrid commands to guilds explicitly before syncing (crucial for d.py hybrid)
-            gids = list(INSTANT_SLASH_GUILDS)
-            if gids:
-                for cmd in (self.sponsor, self.sponsorlist, self.sponsorreport):
-                    try:
-                        # this is the underlying AppCommand for the hybrid command
-                        cmd.app_command.guild_ids = gids
-                    except Exception as e:
-                        mylogger.warning(f"Could not set guild_ids for {cmd.name}: {e}")
-
-                # sync to each guild via snowflake object (works even if not cached)
-                for gid in gids:
-                    await self.bot.tree.sync(guild=discord.Object(id=gid))
-                    mylogger.info(f"SponsorCheck: synced app commands to guild {gid}.")
-            else:
-                # Global sync (can take time to propagate in clients)
-                await self.bot.tree.sync()
-                mylogger.info("SponsorCheck: requested global app command sync.")
-        except Exception as e:
-            mylogger.error(f"SponsorCheck slash sync error: {e}")
-
-    # ---------- Role gate ----------
+    # ---------- Role gate for prefix commands ----------
     async def cog_check(self, ctx: commands.Context) -> bool:
         if not ctx.guild:
             return False
@@ -126,7 +97,9 @@ class SponsorCheck(commands.Cog):
     @commands.group(name="sponsortoken", invoke_without_command=True)
     @commands.is_owner()
     async def sponsortoken(self, ctx: commands.Context):
-        await ctx.send(embed=self._embed_info("SponsorCheck • Token", "Subcommands: `check`, `reload`, `where`", guild=ctx.guild))
+        await ctx.send(
+            embed=self._embed_info("SponsorCheck • Token", "Subcommands: `check`, `reload`, `where`", guild=ctx.guild)
+        )
 
     @sponsortoken.command(name="check")
     @commands.is_owner()
@@ -135,32 +108,46 @@ class SponsorCheck(commands.Cog):
         if not self._pat:
             return await ctx.send(embed=self._embed_err("GitHub PAT", "No token loaded.", guild=ctx.guild))
         masked = self._mask(self._pat)
-        await ctx.send(embed=self._embed_ok("GitHub PAT", f"Loaded from **{self._pat_source}**.\n`{masked}`", guild=ctx.guild))
+        await ctx.send(
+            embed=self._embed_ok("GitHub PAT", f"Loaded from **{self._pat_source}**.\n`{masked}`", guild=ctx.guild)
+        )
 
     @sponsortoken.command(name="reload")
     @commands.is_owner()
     async def sponsortoken_reload(self, ctx: commands.Context):
         self._load_pat(force=True)
         if self._pat:
-            await ctx.send(embed=self._embed_ok("GitHub PAT", f"Reloaded from **{self._pat_source}**.", guild=ctx.guild))
+            await ctx.send(
+                embed=self._embed_ok("GitHub PAT", f"Reloaded from **{self._pat_source}**.", guild=ctx.guild)
+            )
         else:
             await ctx.send(embed=self._embed_err("GitHub PAT", "No PAT found after reload.", guild=ctx.guild))
 
     @sponsortoken.command(name="where")
     @commands.is_owner()
     async def sponsortoken_where(self, ctx: commands.Context):
-        await ctx.send(embed=self._embed_info("GitHub PAT location", f"Env: `GITHUB_PAT`\nFile: `{PAT_FILE}`", guild=ctx.guild))
+        await ctx.send(
+            embed=self._embed_info("GitHub PAT location", f"Env: `GITHUB_PAT`\nFile: `{PAT_FILE}`", guild=ctx.guild)
+        )
 
     # ---------- Embed helpers ----------
     def _safe_desc(self, text: str) -> str:
-        return (text or "") + "\u200b"  # fix iOS clipping
+        return (text or "") + "\u200b"  # prevents iOS embed clipping/truncation
 
-    def _embed(self, title: str, desc: str, *, color: discord.Color, guild: Optional[discord.Guild] = None, footer: Optional[str] = None) -> discord.Embed:
+    def _embed(
+        self,
+        title: str,
+        desc: str,
+        *,
+        color: discord.Color,
+        guild: Optional[discord.Guild] = None,
+        footer: Optional[str] = None,
+    ) -> discord.Embed:
         e = discord.Embed(title=title, description=self._safe_desc(desc), color=color)
         e.set_author(name="SponsorCheck")
         if guild and guild.icon:
             try:
-                e.set_thumbnail(url=guild.icon.url)  # used on list/report; on !sponsor we override with member avatar
+                e.set_thumbnail(url=guild.icon.url)  # list/report use guild icon; !sponsor overrides with member avatar
             except Exception:
                 pass
         if footer:
@@ -180,7 +167,7 @@ class SponsorCheck(commands.Cog):
         headers = {
             "Authorization": f"Bearer {self._pat}",
             "Accept": "application/vnd.github+json",
-            "User-Agent": "Red-SponsorCheck/1.0 (+Kometa)"
+            "User-Agent": "Red-SponsorCheck/1.0 (+Kometa)",
         }
         try:
             async with aiohttp.ClientSession() as s:
@@ -202,12 +189,12 @@ class SponsorCheck(commands.Cog):
     def _attach_person_avatars(self, embed: discord.Embed, member: Optional[discord.Member], gh_avatar: Optional[str]) -> None:
         try:
             if member:
-                embed.set_thumbnail(url=member.display_avatar.url)
+                embed.set_thumbnail(url=member.display_avatar.url)  # Discord avatar
         except Exception:
             pass
         try:
             if gh_avatar:
-                embed.set_image(url=gh_avatar)  # only for public
+                embed.set_image(url=gh_avatar)  # GitHub avatar (for public sponsors)
         except Exception:
             pass
 
@@ -274,7 +261,7 @@ class SponsorCheck(commands.Cog):
         headers = {
             "Authorization": f"Bearer {self._pat}",
             "Content-Type": "application/json",
-            "User-Agent": "Red-SponsorCheck/1.0 (+Kometa)"
+            "User-Agent": "Red-SponsorCheck/1.0 (+Kometa)",
         }
 
         cp: Set[str] = set(); cpr: Set[str] = set(); pp: Set[str] = set(); ppr: Set[str] = set()
@@ -322,13 +309,14 @@ class SponsorCheck(commands.Cog):
 
         return cp, cpr, pp, ppr
 
-    # ---------- Utilities ----------
+    # ---------- Utility ----------
     def _gh_candidates_from_names(self, ksn: str, dsn: str, override: Optional[str]) -> List[str]:
         def norm(s: Optional[str]) -> str:
             if not s:
                 return ""
             s = s.strip().lstrip("@").lower().replace(" ", "").replace("_", "").replace(".", "")
             return "".join(ch for ch in s if ch.isalnum() or ch == "-")
+
         cands: List[str] = []
         for raw in (override or "", dsn or "", ksn or ""):
             base = norm(raw)
@@ -374,11 +362,13 @@ class SponsorCheck(commands.Cog):
         await ctx.send("Full report attached:", file=discord.File(bio, filename=filename))
 
     async def _send_pat_error(self, ctx: commands.Context):
-        return await ctx.send(embed=self._embed_err(
-            "GitHub token not configured",
-            f"Set env `GITHUB_PAT` **or** create `{PAT_FILE}` with a valid PAT, then restart or `[p]sponsortoken reload`.",
-            guild=ctx.guild
-        ))
+        return await ctx.send(
+            embed=self._embed_err(
+                "GitHub token not configured",
+                f"Set env `GITHUB_PAT` **or** create `{PAT_FILE}` with a valid PAT, then restart or `[p]sponsortoken reload`.",
+                guild=ctx.guild,
+            )
+        )
 
     async def _send_pat_auth_message(self, ctx: commands.Context, e: "GitHubAuthError"):
         readable = {
@@ -397,14 +387,11 @@ class SponsorCheck(commands.Cog):
             return ""
         return token[:keep] + "*" * (len(token) - keep) if len(token) > keep else "*" * len(token)
 
-    # ---------- Commands (hybrid = prefix + slash) ----------
-    @commands.hybrid_command(name="sponsor", with_app_command=True, description="Check a user’s GitHub sponsor status.")
-    @commands.guild_only()
-    async def sponsor(self, ctx: commands.Context, username: str):
-        """
-        If they are a sponsor (public/private, current/past) and we can resolve a guild member without the role,
-        auto-grant the Sponsor role and report the result.
-        """
+    # =====================================================================
+    # Core handlers — used by both prefix and slash surfaces (DRY)
+    # =====================================================================
+
+    async def _sponsor_core(self, ctx: commands.Context, username: str):
         self._ensure_pat()
         if not self._pat:
             return await self._send_pat_error(ctx)
@@ -516,8 +503,10 @@ class SponsorCheck(commands.Cog):
             )
             em.add_field(name="Candidate GH usernames (heuristic)", value=cand_text, inline=False)
             if possible_member:
-                try: em.set_thumbnail(url=possible_member.display_avatar.url)
-                except Exception: pass
+                try:
+                    em.set_thumbnail(url=possible_member.display_avatar.url)
+                except Exception:
+                    pass
             return await ctx.send(embed=em)
 
         # Hard not-found
@@ -527,14 +516,13 @@ class SponsorCheck(commands.Cog):
             guild=ctx.guild,
         )
         if possible_member:
-            try: em.set_thumbnail(url=possible_member.display_avatar.url)
-            except Exception: pass
+            try:
+                em.set_thumbnail(url=possible_member.display_avatar.url)
+            except Exception:
+                pass
         return await ctx.send(embed=em)
 
-    @commands.hybrid_command(name="sponsorlist", with_app_command=True, description="List public sponsors; show private counts.")
-    @commands.guild_only()
-    async def sponsorlist(self, ctx: commands.Context):
-        """Public lists + private counts. Guild icon on embed; long output attaches as a file."""
+    async def _sponsorlist_core(self, ctx: commands.Context):
         self._ensure_pat()
         if not self._pat:
             return await self._send_pat_error(ctx)
@@ -547,8 +535,10 @@ class SponsorCheck(commands.Cog):
             return await ctx.send(embed=self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
 
         counts = (
-            f"**Current sponsors:** **{len(curr_pub) + len(curr_priv)}** (public **{len(curr_pub)}**, private **{len(curr_priv)}**)\n"
-            f"**Past sponsors:** **{len(past_pub) + len(past_priv)}** (public **{len(past_pub)}**, private **{len(past_priv)}**)"
+            f"**Current sponsors:** **{len(curr_pub) + len(curr_priv)}** "
+            f"(public **{len(curr_pub)}**, private **{len(curr_priv)}**)\n"
+            f"**Past sponsors:** **{len(past_pub) + len(past_priv)}** "
+            f"(public **{len(past_pub)}**, private **{len(past_priv)}**)"
         )
 
         lines = [
@@ -560,21 +550,27 @@ class SponsorCheck(commands.Cog):
         ]
 
         await self._send_report(
-            ctx, lines, base_name="sponsorlist",
-            embed=self._embed_info("Sponsor list • Summary", counts, guild=ctx.guild, footer="Private sponsors are not listed by name.")
+            ctx,
+            lines,
+            base_name="sponsorlist",
+            embed=self._embed_info(
+                "Sponsor list • Summary",
+                counts,
+                guild=ctx.guild,
+                footer="Private sponsors are not listed by name.",
+            ),
         )
 
-    @commands.hybrid_command(name="sponsorreport", with_app_command=True, description="Actionable reconciliation report.")
-    @commands.guild_only()
-    async def sponsorreport(self, ctx: commands.Context, limit: int = 2000):
-        """Actionable reconciliation. Guild icon in embed. Long outputs attach as a file."""
+    async def _sponsorreport_core(self, ctx: commands.Context, limit: int):
         self._ensure_pat()
         if not self._pat:
             return await self._send_pat_error(ctx)
 
         role = ctx.guild.get_role(SPONSOR_ROLE_ID)
         if not role:
-            return await ctx.send(embed=self._embed_err("Sponsor role not found", f"ID `{SPONSOR_ROLE_ID}`", guild=ctx.guild))
+            return await ctx.send(
+                embed=self._embed_err("Sponsor role not found", f"ID `{SPONSOR_ROLE_ID}`", guild=ctx.guild)
+            )
 
         try:
             curr_pub, curr_priv, past_pub, past_priv = await self._fetch_all_sponsors()
@@ -650,7 +646,7 @@ class SponsorCheck(commands.Cog):
             if items:
                 out.extend(items[:limit])
                 if len(items) > limit:
-                    out.append(f"…and {len(items)-limit} more")
+                    out.append(f"…and {len(items) - limit} more")
             else:
                 out.append("—")
             out.append("\n")
@@ -664,9 +660,57 @@ class SponsorCheck(commands.Cog):
         lines += section_block("Has role but lapsed (past-only)", lapsed_role)
         lines += section_block("Has role but never sponsored (or needs mapping)", never_role)
         lines += section_block("Current sponsors not in server (GitHub usernames)", current_not_in_server)
-        lines.append("Notes: Public and private sponsors come from the GitHub API via your PAT. Private identities are matched for reconciliation but not printed.\n")
+        lines.append(
+            "Notes: Public and private sponsors come from the GitHub API via your PAT. "
+            "Private identities are matched for reconciliation but not printed.\n"
+        )
 
         await self._send_report(
             ctx, lines, base_name="sponsorreport",
             embed=self._embed_info("Sponsor report • Summary", summary, guild=ctx.guild)
         )
+
+    # =====================================================================
+    # Prefix commands
+    # =====================================================================
+
+    @commands.command(name="sponsor")
+    @commands.guild_only()
+    async def sponsor_prefix(self, ctx: commands.Context, username: str):
+        await self._sponsor_core(ctx, username)
+
+    @commands.command(name="sponsorlist")
+    @commands.guild_only()
+    async def sponsorlist_prefix(self, ctx: commands.Context):
+        await self._sponsorlist_core(ctx)
+
+    @commands.command(name="sponsorreport")
+    @commands.guild_only()
+    async def sponsorreport_prefix(self, ctx: commands.Context, limit: int = 2000):
+        await self._sponsorreport_core(ctx, limit)
+
+    # =====================================================================
+    # Slash commands (explicit, like threads.py)
+    # =====================================================================
+
+    @app_commands.command(name="sponsor", description="Check a user’s GitHub sponsor status.")
+    @app_commands.describe(username="GitHub or Discord name to check")
+    async def sponsor_slash(self, interaction: discord.Interaction, username: str):
+        ctx = await commands.Context.from_interaction(interaction)
+        await self._sponsor_core(ctx, username)
+
+    @app_commands.command(name="sponsorlist", description="List public sponsors; show private counts.")
+    async def sponsorlist_slash(self, interaction: discord.Interaction):
+        ctx = await commands.Context.from_interaction(interaction)
+        await self._sponsorlist_core(ctx)
+
+    @app_commands.command(name="sponsorreport", description="Actionable reconciliation report.")
+    @app_commands.describe(limit="Max lines per section in the text attachment (default 2000)")
+    async def sponsorreport_slash(self, interaction: discord.Interaction, limit: int = 2000):
+        ctx = await commands.Context.from_interaction(interaction)
+        await self._sponsorreport_core(ctx, limit)
+
+
+# Red entrypoint
+async def setup(bot):
+    await bot.add_cog(SponsorCheck(bot))
