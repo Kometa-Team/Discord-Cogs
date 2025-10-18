@@ -8,7 +8,7 @@ from typing import Optional, Set, Tuple, Dict, List
 
 import aiohttp
 import discord
-from redbot.core import commands, app_commands  # explicit slash registration like threads.py
+from redbot.core import commands, app_commands
 
 # ---------- Logging ----------
 mylogger = logging.getLogger("sponsorcheck")
@@ -34,18 +34,303 @@ PAT_FILE = "/opt/red-botmoose/secrets/github_pat.txt"
 
 # ---------- Easter Egg ----------
 EASTER_EGG_NAMES = {"sohjiro", "meisnate12"}
-EASTER_EGG_TITLE = "You found the hidden egg! 🥚"
 EASTER_EGG_DESC = (
     "You're checking **{who}** — the developer/sponsorable behind this project.\n\n"
     "If you're feeling generous, consider supporting the work directly ❤️\n"
     "→ https://github.com/sponsors/meisnate12"
 )
 
-# ---------- Pagination helpers ----------
-MAX_EMBED_CHARS = 3500  # keep headroom under the 4096 hard cap
-PAGE_LINE_PREFIX = "• "  # bullet for list items
-VIEW_TIMEOUT_SECONDS = 180  # disable buttons after N seconds
+# ---------- Pagination / UI ----------
+MAX_EMBED_CHARS = 3500  # safe margin under 4096 cap
+PAGE_SIZE = 30  # items per page (phone-friendly)
+VIEW_TIMEOUT_SECONDS = 180  # auto-disable controls after 3 minutes
+BULLET = "• "
 
+
+# ===== Utility UI pieces =====
+
+class SectionSelect(discord.ui.Select):
+    def __init__(self, view: "MasterPager", sections: List[str], current: int):
+        options = [discord.SelectOption(label=title, value=str(i), default=(i == current))
+                   for i, title in enumerate(sections)]
+        super().__init__(placeholder="Jump to section…", min_values=1, max_values=1, options=options)
+        self.master: "MasterPager" = view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.master.section_index = int(self.values[0])
+        self.master.page_index = 0
+        await self.master.render(interaction)
+
+
+class GoToPageModal(discord.ui.Modal, title="Jump to page"):
+    page_number = discord.ui.TextInput(
+        label="Enter page number (1..N)",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=6,
+        placeholder="e.g. 3",
+    )
+
+    def __init__(self, master: "MasterPager"):
+        super().__init__()
+        self.master = master
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            n = int(str(self.page_number).strip())
+            max_n = len(self.master.pages[self.master.section_index])
+            if n < 1 or n > max_n:
+                raise ValueError
+            self.master.page_index = n - 1
+        except Exception:
+            # keep current page; we could show ephemeral error later if desired
+            pass
+        await self.master.render(interaction)
+
+
+class SearchModal(discord.ui.Modal, title="Search list"):
+    query = discord.ui.TextInput(
+        label="Find (case-insensitive substring)",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=50,
+        placeholder="e.g. dark, moose, 1337…",
+    )
+
+    def __init__(self, master: "MasterPager"):
+        super().__init__()
+        self.master = master
+
+    async def on_submit(self, interaction: discord.Interaction):
+        q = str(self.query).strip().lower()
+        if not q:
+            return await self.master.render(interaction)
+        # Build a temporary search section from all items (non-summary)
+        results: List[str] = []
+        for sec_i, sec_pages in enumerate(self.master.orig_items):
+            if sec_i == 0:
+                continue  # skip summary
+            for s in sec_pages:
+                if q in s.lower():
+                    results.append(s)
+        if results:
+            self.master.activate_search(q, results)
+        else:
+            self.master.activate_search(q, ["— no matches —"])
+        await self.master.render(interaction)
+
+
+class MasterPager(discord.ui.View):
+    """
+    One master embed with:
+      - Section dropdown (Summary + each logical section)
+      - Buttons: ⏮ ◀ ▶ ⏭ 🔢 (goto) 🔎 (search) 🧹 (clear search) 🗑 (close)
+      - Per-section pages with PAGE_SIZE items (bulleted), safe under MAX_EMBED_CHARS
+    """
+
+    def __init__(
+            self,
+            owner_id: int,
+            *,
+            title_prefix: str,
+            sections: List[Tuple[str, List[str]]],  # [(section_title, items)]
+            icon_url: Optional[str],
+            color: discord.Color,
+    ):
+        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
+        self.owner_id = owner_id
+        self.title_prefix = title_prefix
+        self.color = color
+        self.icon_url = icon_url
+
+        # Keep originals for search reset
+        self.section_titles: List[str] = [t for t, _ in sections]
+        self.orig_items: List[List[str]] = [lst[:] for _, lst in sections]
+
+        # Build pages: list per section of page strings
+        self.pages: List[List[str]] = [self._chunk_to_pages(items) for _, items in sections]
+
+        self.section_index = 0
+        self.page_index = 0
+        self.search_active = False
+        self.search_label: Optional[str] = None
+
+        # Dropdown
+        self.section_select = SectionSelect(self, self.section_titles, self.section_index)
+        self.add_item(self.section_select)
+
+    # ---- helpers ----
+    def _chunk_to_pages(self, items: List[str]) -> List[str]:
+        if not items:
+            return ["—"]
+        pages: List[str] = []
+        buf = ""
+        count = 0
+        for it in items:
+            line = f"{BULLET}{it}\n"
+            if count >= PAGE_SIZE or len(buf) + len(line) > MAX_EMBED_CHARS:
+                pages.append(buf.rstrip())
+                buf = line
+                count = 1
+            else:
+                buf += line
+                count += 1
+        if buf:
+            pages.append(buf.rstrip())
+        return pages
+
+    def _current_title(self) -> str:
+        base = f"{self.title_prefix} • {self.section_titles[self.section_index]}"
+        if self.search_active and self.search_label:
+            base += f" (search: {self.search_label})"
+        return base
+
+    def _make_embed(self) -> discord.Embed:
+        page_texts = self.pages[self.section_index]
+        page_text = page_texts[self.page_index]
+        e = discord.Embed(title=self._current_title(), description=page_text, color=self.color)
+        e.set_author(name="SponsorCheck")
+        if self.icon_url:
+            try:
+                e.set_thumbnail(url=self.icon_url)
+            except Exception:
+                pass
+        e.set_footer(
+            text=f"Page {self.page_index + 1}/{len(page_texts)} • Buttons disable after {VIEW_TIMEOUT_SECONDS // 60}m")
+        return e
+
+    def activate_search(self, query: str, results: List[str]):
+        """Show a synthetic search section."""
+        self.search_active = True
+        self.search_label = query
+        # Section 0 is Summary; show search as a temporary final section
+        search_title = "Search results"
+        if len(self.section_titles) == len(self.pages):  # no extra slot yet
+            self.section_titles.append(search_title)
+            self.pages.append(self._chunk_to_pages(results))
+        else:
+            self.section_titles[-1] = search_title
+            self.pages[-1] = self._chunk_to_pages(results)
+        self.section_index = len(self.pages) - 1
+        self.page_index = 0
+        # refresh dropdown
+        self.clear_items()
+        self.section_select = SectionSelect(self, self.section_titles, self.section_index)
+        self.add_item(self.section_select)
+        self._add_buttons()
+
+    def clear_search(self):
+        if not self.search_active:
+            return
+        self.search_active = False
+        self.search_label = None
+        # Remove the last section (search)
+        if len(self.pages) > len(self.orig_items):
+            self.pages.pop()
+            self.section_titles.pop()
+        self.section_index = 0
+        self.page_index = 0
+        self.clear_items()
+        self.section_select = SectionSelect(self, self.section_titles, self.section_index)
+        self.add_item(self.section_select)
+        self._add_buttons()
+
+    async def render(self, interaction: discord.Interaction):
+        # refresh dropdown (keeps defaults highlighted)
+        self.clear_items()
+        self.section_select = SectionSelect(self, self.section_titles, self.section_index)
+        self.add_item(self.section_select)
+        self._add_buttons()
+        await interaction.response.edit_message(embed=self._make_embed(), view=self)
+
+    def _add_buttons(self):
+        # navigation buttons
+        self.add_item(self._btn_first())
+        self.add_item(self._btn_prev())
+        self.add_item(self._btn_next())
+        self.add_item(self._btn_last())
+        # tools
+        self.add_item(self._btn_goto())
+        self.add_item(self._btn_search())
+        self.add_item(self._btn_clear())
+        self.add_item(self._btn_close())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Only the invoker can page/search
+        return interaction.user.id == self.owner_id
+
+    async def on_timeout(self):
+        for c in self.children:
+            if isinstance(c, discord.ui.Button) or isinstance(c, discord.ui.Select):
+                c.disabled = True
+
+    # ---- button factories ----
+    def _btn_first(self):
+        @discord.ui.button(emoji="⏮", style=discord.ButtonStyle.secondary, row=1)
+        async def _first(_self, interaction: discord.Interaction):
+            self.page_index = 0
+            await self.render(interaction)
+
+        return _first
+
+    def _btn_prev(self):
+        @discord.ui.button(emoji="◀", style=discord.ButtonStyle.secondary, row=1)
+        async def _prev(_self, interaction: discord.Interaction):
+            self.page_index = (self.page_index - 1) % len(self.pages[self.section_index])
+            await self.render(interaction)
+
+        return _prev
+
+    def _btn_next(self):
+        @discord.ui.button(emoji="▶", style=discord.ButtonStyle.secondary, row=1)
+        async def _next(_self, interaction: discord.Interaction):
+            self.page_index = (self.page_index + 1) % len(self.pages[self.section_index])
+            await self.render(interaction)
+
+        return _next
+
+    def _btn_last(self):
+        @discord.ui.button(emoji="⏭", style=discord.ButtonStyle.secondary, row=1)
+        async def _last(_self, interaction: discord.Interaction):
+            self.page_index = len(self.pages[self.section_index]) - 1
+            await self.render(interaction)
+
+        return _last
+
+    def _btn_goto(self):
+        @discord.ui.button(emoji="🔢", style=discord.ButtonStyle.secondary, row=2)
+        async def _goto(_self, interaction: discord.Interaction):
+            await interaction.response.send_modal(GoToPageModal(self))
+
+        return _goto
+
+    def _btn_search(self):
+        @discord.ui.button(emoji="🔎", style=discord.ButtonStyle.secondary, row=2)
+        async def _search(_self, interaction: discord.Interaction):
+            await interaction.response.send_modal(SearchModal(self))
+
+        return _search
+
+    def _btn_clear(self):
+        @discord.ui.button(emoji="🧹", style=discord.ButtonStyle.secondary, row=2)
+        async def _clear(_self, interaction: discord.Interaction):
+            self.clear_search()
+            await self.render(interaction)
+
+        return _clear
+
+    def _btn_close(self):
+        @discord.ui.button(emoji="🗑", style=discord.ButtonStyle.danger, row=2)
+        async def _close(_self, interaction: discord.Interaction):
+            for c in self.children:
+                if isinstance(c, discord.ui.Button) or isinstance(c, discord.ui.Select):
+                    c.disabled = True
+            await interaction.response.edit_message(view=self)
+
+        return _close
+
+
+# ===== Cog =====
 
 class GitHubAuthError(RuntimeError):
     def __init__(self, code: str, detail: str):
@@ -54,79 +339,13 @@ class GitHubAuthError(RuntimeError):
         self.detail = detail
 
 
-class ListPager(discord.ui.View):
-    """Button-based pager for a multi-page embed list."""
-
-    def __init__(self, owner_id: int, *, title: str, pages: List[str], color: discord.Color,
-                 icon_url: Optional[str] = None):
-        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
-        self.owner_id = owner_id
-        self.title = title
-        self.pages = pages if pages else ["—"]
-        self.color = color
-        self.icon_url = icon_url
-        self.index = 0
-
-    def _make_embed(self) -> discord.Embed:
-        e = discord.Embed(title=self.title, description=self.pages[self.index], color=self.color)
-        e.set_author(name="SponsorCheck")
-        if self.icon_url:
-            try:
-                e.set_thumbnail(url=self.icon_url)
-            except Exception:
-                pass
-        e.set_footer(
-            text=f"Page {self.index + 1}/{len(self.pages)} • Buttons disable after {VIEW_TIMEOUT_SECONDS // 60}m")
-        return e
-
-    async def _edit(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(embed=self._make_embed(), view=self)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Only allow the invoker to page (avoid channel spam wars)
-        return interaction.user.id == self.owner_id
-
-    async def on_timeout(self) -> None:
-        for c in self.children:
-            if isinstance(c, discord.ui.Button):
-                c.disabled = True
-
-    # Buttons
-    @discord.ui.button(emoji="⏮", style=discord.ButtonStyle.secondary)
-    async def first(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.index = 0
-        await self._edit(interaction)
-
-    @discord.ui.button(emoji="◀", style=discord.ButtonStyle.secondary)
-    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.index = (self.index - 1) % len(self.pages)
-        await self._edit(interaction)
-
-    @discord.ui.button(emoji="▶", style=discord.ButtonStyle.secondary)
-    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.index = (self.index + 1) % len(self.pages)
-        await self._edit(interaction)
-
-    @discord.ui.button(emoji="⏭", style=discord.ButtonStyle.secondary)
-    async def last(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.index = len(self.pages) - 1
-        await self._edit(interaction)
-
-    @discord.ui.button(emoji="🗑", style=discord.ButtonStyle.danger)
-    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for c in self.children:
-            if isinstance(c, discord.ui.Button):
-                c.disabled = True
-        await interaction.response.edit_message(view=self)
-
-
 class SponsorCheck(commands.Cog):
-    """GitHub Sponsors via GraphQL (no scraping). Embeds everywhere; auto-grant role on match + paginated sections."""
+    """GitHub Sponsors via GraphQL (no scraping). Master-embed pagination with search + file attachments."""
 
     def __init__(self, bot):
         self.bot = bot
         self._pat: Optional[str] = None
-        self._pat_source: Optional[str] = None  # "env" | "file" | None
+        self._pat_source: Optional[str] = None
         self._load_pat(initial=True)
 
     # ---------- Role gate for prefix commands ----------
@@ -163,55 +382,12 @@ class SponsorCheck(commands.Cog):
         if not self._pat:
             self._load_pat(force=True)
 
-    # ---------- Owner token tools (prefix only) ----------
-    @commands.group(name="sponsortoken", invoke_without_command=True)
-    @commands.is_owner()
-    async def sponsortoken(self, ctx: commands.Context):
-        await ctx.send(
-            embed=self._embed_info("SponsorCheck • Token", "Subcommands: `check`, `reload`, `where`", guild=ctx.guild)
-        )
-
-    @sponsortoken.command(name="check")
-    @commands.is_owner()
-    async def sponsortoken_check(self, ctx: commands.Context):
-        self._ensure_pat()
-        if not self._pat:
-            return await ctx.send(embed=self._embed_err("GitHub PAT", "No token loaded.", guild=ctx.guild))
-        masked = self._mask(self._pat)
-        await ctx.send(
-            embed=self._embed_ok("GitHub PAT", f"Loaded from **{self._pat_source}**.\n`{masked}`", guild=ctx.guild)
-        )
-
-    @sponsortoken.command(name="reload")
-    @commands.is_owner()
-    async def sponsortoken_reload(self, ctx: commands.Context):
-        self._load_pat(force=True)
-        if self._pat:
-            await ctx.send(
-                embed=self._embed_ok("GitHub PAT", f"Reloaded from **{self._pat_source}**.", guild=ctx.guild))
-        else:
-            await ctx.send(embed=self._embed_err("GitHub PAT", "No PAT found after reload.", guild=ctx.guild))
-
-    @sponsortoken.command(name="where")
-    @commands.is_owner()
-    async def sponsortoken_where(self, ctx: commands.Context):
-        await ctx.send(
-            embed=self._embed_info("GitHub PAT location", f"Env: `GITHUB_PAT`\nFile: `{PAT_FILE}`", guild=ctx.guild)
-        )
-
-    # ---------- Embed helpers ----------
+    # ---------- Embeds ----------
     def _safe_desc(self, text: str) -> str:
-        return (text or "") + "\u200b"  # prevents iOS embed clipping/truncation
+        return (text or "") + "\u200b"
 
-    def _embed(
-            self,
-            title: str,
-            desc: str,
-            *,
-            color: discord.Color,
-            guild: Optional[discord.Guild] = None,
-            footer: Optional[str] = None,
-    ) -> discord.Embed:
+    def _embed(self, title: str, desc: str, *, color: discord.Color,
+               guild: Optional[discord.Guild] = None) -> discord.Embed:
         e = discord.Embed(title=title, description=self._safe_desc(desc), color=color)
         e.set_author(name="SponsorCheck")
         if guild and guild.icon:
@@ -219,8 +395,6 @@ class SponsorCheck(commands.Cog):
                 e.set_thumbnail(url=guild.icon.url)
             except Exception:
                 pass
-        if footer:
-            e.set_footer(text=footer)
         return e
 
     def _embed_ok(self, t, d, **kw):
@@ -235,7 +409,7 @@ class SponsorCheck(commands.Cog):
     def _embed_info(self, t, d, **kw):
         return self._embed(t, d, color=discord.Color.blurple(), **kw)
 
-    # ---------- Avatars & member lookup ----------
+    # ---------- Member / avatar utils ----------
     async def _github_avatar(self, login: str) -> Optional[str]:
         if not login:
             return None
@@ -266,12 +440,12 @@ class SponsorCheck(commands.Cog):
                                gh_avatar: Optional[str]) -> None:
         try:
             if member:
-                embed.set_thumbnail(url=member.display_avatar.url)  # Discord avatar
+                embed.set_thumbnail(url=member.display_avatar.url)
         except Exception:
             pass
         try:
             if gh_avatar:
-                embed.set_image(url=gh_avatar)  # GitHub avatar (for public sponsors)
+                embed.set_image(url=gh_avatar)
         except Exception:
             pass
 
@@ -283,7 +457,6 @@ class SponsorCheck(commands.Cog):
         return bool(role and role in member.roles)
 
     async def _try_grant_role(self, guild: discord.Guild, member: discord.Member) -> Tuple[bool, str]:
-        """Attempt to add the Sponsor role with helpful diagnostics."""
         role = guild.get_role(SPONSOR_ROLE_ID)
         if not role:
             return False, f"Role id `{SPONSOR_ROLE_ID}` not found."
@@ -301,7 +474,6 @@ class SponsorCheck(commands.Cog):
         role_pos = getattr(role, "position", -1)
         me_pos = getattr(me.top_role, "position", -1)
         user_pos = getattr(member.top_role, "position", -1)
-
         if role_pos >= me_pos:
             return False, f"Bot’s top role is not above `{role.name}`."
         if user_pos >= me_pos and member != me:
@@ -389,7 +561,14 @@ class SponsorCheck(commands.Cog):
 
         return cp, cpr, pp, ppr
 
-    # ---------- Utilities ----------
+    # ---------- Common helpers ----------
+    async def _send_file_always(self, ctx: commands.Context, lines: List[str], base_name: str):
+        text = "".join((ln if ln.endswith("\n") else ln + "\n") for ln in lines)
+        bio = BytesIO(text.encode("utf-8"))
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        filename = f"{base_name}_{ctx.guild.id}_{ts}.txt"
+        await ctx.send(file=discord.File(bio, filename=filename))
+
     def _gh_candidates_from_names(self, ksn: str, dsn: str, override: Optional[str]) -> List[str]:
         def norm(s: Optional[str]) -> str:
             if not s:
@@ -417,99 +596,14 @@ class SponsorCheck(commands.Cog):
                             cands.append(stripped_tail)
         return cands
 
-    def _chunk_items_to_pages(self, items: List[str]) -> List[str]:
-        """Return pages as strings <= MAX_EMBED_CHARS (adds bullets; preserves counts)."""
-        if not items:
-            return ["—"]
-        pages: List[str] = []
-        buf = ""
-        for it in items:
-            line = f"{PAGE_LINE_PREFIX}{it}\n"
-            if len(buf) + len(line) > MAX_EMBED_CHARS:
-                pages.append(buf.rstrip())
-                buf = line
-            else:
-                buf += line
-        if buf:
-            pages.append(buf.rstrip())
-        return pages
-
-    async def _send_paginated_section(self, ctx: commands.Context, section_title: str, items: List[str], *,
-                                      color: discord.Color):
-        """Send a paginated embed for one section (and quietly no-op on empty)."""
-        title = f"{section_title} ({len(items)})"
-        pages = self._chunk_items_to_pages(items)
-        icon_url = None
-        if ctx.guild and ctx.guild.icon:
-            try:
-                icon_url = ctx.guild.icon.url
-            except Exception:
-                pass
-        view = ListPager(owner_id=ctx.author.id, title=title, pages=pages, color=color, icon_url=icon_url)
-        await ctx.send(embed=view._make_embed(), view=view)
-
-    async def _send_report(self, ctx: commands.Context, lines: List[str], *, base_name: str, embed: discord.Embed):
-        """Keep your original behavior: summary embed + attachment if long."""
-        await ctx.send(embed=embed)
-
-        # try inline; else attach
-        chunks: List[str] = []
-        buf = ""
-        for line in lines:
-            line = line if line.endswith("\n") else line + "\n"
-            if len(buf) + len(line) > 1800:
-                chunks.append(buf);
-                buf = line
-            else:
-                buf += line
-        if buf:
-            chunks.append(buf)
-        total_len = sum(len(c) for c in chunks)
-        if total_len <= 3800 and len(chunks) <= 2:
-            for c in chunks:
-                await ctx.send(f"```\n{c}```")
-            return
-
-        text = "".join(chunks)
-        bio = BytesIO(text.encode("utf-8"))
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        filename = f"{base_name}_{ctx.guild.id}_{ts}.txt"
-        await ctx.send("Full report attached:", file=discord.File(bio, filename=filename))
-
-    async def _send_pat_error(self, ctx: commands.Context):
-        return await ctx.send(
-            embed=self._embed_err(
-                "GitHub token not configured",
-                f"Set env `GITHUB_PAT` **or** create `{PAT_FILE}` with a valid PAT, then restart or `[p]sponsortoken reload`.",
-                guild=ctx.guild,
-            )
-        )
-
-    async def _send_pat_auth_message(self, ctx: commands.Context, e: "GitHubAuthError"):
-        readable = {
-            "missing_pat": "GitHub token not configured.",
-            "unauthorized": "Bad credentials (token invalid/expired/revoked).",
-            "forbidden": "Insufficient scopes or access to Sponsors API.",
-            "http_error": f"HTTP error: {e.detail}",
-            "graphql_error": f"GraphQL error: {e.detail}",
-            "schema_error": f"Unexpected API response.",
-        }.get(e.code, f"GitHub API error: {e.detail}")
-        return await ctx.send(embed=self._embed_err("GitHub API", readable, guild=ctx.guild))
-
-    @staticmethod
-    def _mask(token: str, keep: int = 4) -> str:
-        if not token:
-            return ""
-        return token[:keep] + "*" * (len(token) - keep) if len(token) > keep else "*" * len(token)
-
     # =====================================================================
-    # Core handlers — shared by prefix and slash
+    # Core logic shared by prefix and slash
     # =====================================================================
 
     async def _sponsor_core(self, ctx: commands.Context, username: str):
         self._ensure_pat()
         if not self._pat:
-            return await self._send_pat_error(ctx)
+            return await ctx.send(embed=self._embed_err("GitHub token", "Not configured.", guild=ctx.guild))
 
         target = (username or "").lstrip("@").strip()
         if not target:
@@ -528,7 +622,7 @@ class SponsorCheck(commands.Cog):
         try:
             curr_pub, curr_priv, past_pub, past_priv = await self._fetch_all_sponsors()
         except GitHubAuthError as e:
-            return await self._send_pat_auth_message(ctx, e)
+            return await ctx.send(embed=self._embed_err("GitHub API", e.detail, guild=ctx.guild))
         except Exception as e:
             mylogger.exception("sponsor(): API failure")
             return await ctx.send(embed=self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
@@ -547,7 +641,8 @@ class SponsorCheck(commands.Cog):
         if t in union_public:
             status = "current" if t in current_public else "past"
             gh_avatar = await self._github_avatar(target)
-            em = self._embed_ok("Sponsor check", f"**{target}** is a **{status}** public sponsor of **{SPONSORABLE}**.")
+            em = self._embed_ok("Sponsor check", f"**{target}** is a **{status}** public sponsor of **{SPONSORABLE}**.",
+                                guild=ctx.guild)
             self._attach_person_avatars(em, possible_member, gh_avatar)
             if possible_member:
                 ok, msg = await self._try_grant_role(ctx.guild, possible_member)
@@ -557,7 +652,8 @@ class SponsorCheck(commands.Cog):
         # Direct private
         if t in union_private:
             status = "current" if t in current_private else "past"
-            em = self._embed_warn("Sponsor check", f"**{target}** is a **{status}** sponsor of **{SPONSORABLE}**.")
+            em = self._embed_warn("Sponsor check", f"**{target}** is a **{status}** sponsor of **{SPONSORABLE}**.",
+                                  guild=ctx.guild)
             em.add_field(name="Privacy", value="Private", inline=True)
             self._attach_person_avatars(em, possible_member, None)
             if possible_member:
@@ -579,7 +675,8 @@ class SponsorCheck(commands.Cog):
                     status = "current" if lc in current_public else "past"
                     gh_avatar = await self._github_avatar(cand)
                     em = self._embed_ok("Sponsor check",
-                                        f"**{ksn}** → **{dsn}** → **{status}** public sponsor of **{SPONSORABLE}**.")
+                                        f"**{ksn}** → **{dsn}** → **{status}** public sponsor of **{SPONSORABLE}**.",
+                                        guild=ctx.guild)
                     self._attach_person_avatars(em, candidate_member, gh_avatar)
                     ok, msg = await self._try_grant_role(ctx.guild, candidate_member)
                     em.add_field(name="Role action", value=msg, inline=False)
@@ -590,7 +687,8 @@ class SponsorCheck(commands.Cog):
                 if lc in union_private:
                     status = "current" if lc in current_private else "past"
                     em = self._embed_warn("Sponsor check",
-                                          f"**{ksn}** → **{dsn}** → **{status}** sponsor of **{SPONSORABLE}**.")
+                                          f"**{ksn}** → **{dsn}** → **{status}** sponsor of **{SPONSORABLE}**.",
+                                          guild=ctx.guild)
                     em.add_field(name="Privacy", value="Private", inline=True)
                     self._attach_person_avatars(em, candidate_member, None)
                     ok, msg = await self._try_grant_role(ctx.guild, candidate_member)
@@ -613,7 +711,7 @@ class SponsorCheck(commands.Cog):
             )
             em.add_field(
                 name="What this likely means",
-                value=("• GitHub login differs → add a mapping in `GH_USERNAME_MAP`\n"
+                value=("• GitHub login differs → add mapping in `GH_USERNAME_MAP`\n"
                        "• Private sponsor → add to `VERIFIED_PRIVATE_IDS`/`VERIFIED_PRIVATE_USERNAMES`\n"
                        "• Or the role was granted by mistake"),
                 inline=False,
@@ -627,11 +725,9 @@ class SponsorCheck(commands.Cog):
             return await ctx.send(embed=em)
 
         # Hard not-found
-        em = self._embed_err(
-            "Sponsor check",
-            f"**{target}** does not appear as a sponsor of **{SPONSORABLE}** (current or past).",
-            guild=ctx.guild,
-        )
+        em = self._embed_err("Sponsor check",
+                             f"**{target}** does not appear as a sponsor of **{SPONSORABLE}** (current or past).",
+                             guild=ctx.guild)
         if possible_member:
             try:
                 em.set_thumbnail(url=possible_member.display_avatar.url)
@@ -642,11 +738,11 @@ class SponsorCheck(commands.Cog):
     async def _sponsorlist_core(self, ctx: commands.Context):
         self._ensure_pat()
         if not self._pat:
-            return await self._send_pat_error(ctx)
+            return await ctx.send(embed=self._embed_err("GitHub token", "Not configured.", guild=ctx.guild))
         try:
             curr_pub, curr_priv, past_pub, past_priv = await self._fetch_all_sponsors()
         except GitHubAuthError as e:
-            return await self._send_pat_auth_message(ctx, e)
+            return await ctx.send(embed=self._embed_err("GitHub API", e.detail, guild=ctx.guild))
         except Exception as e:
             mylogger.exception("sponsorlist(): API failure")
             return await ctx.send(embed=self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
@@ -658,7 +754,7 @@ class SponsorCheck(commands.Cog):
             f"(public **{len(past_pub)}**, private **{len(past_priv)}**)"
         )
 
-        # Summary + attachment (full)
+        # Always attach the full text file
         lines = [
             f"Public sponsors for {SPONSORABLE} (GitHub API)\n",
             f"Current: {len(curr_pub) + len(curr_priv)}  (public: {len(curr_pub)}, private: {len(curr_priv)})\n",
@@ -666,45 +762,49 @@ class SponsorCheck(commands.Cog):
             f"Past: {len(past_pub) + len(past_priv)}  (public: {len(past_pub)}, private: {len(past_priv)})\n",
             "Past (public): " + (", ".join(sorted(past_pub, key=str.lower)) if past_pub else "—") + "\n",
         ]
-        await self._send_report(
-            ctx,
-            lines,
-            base_name="sponsorlist",
-            embed=self._embed_info(
-                "Sponsor list • Summary",
-                counts,
-                guild=ctx.guild,
-                footer="Private sponsors are not listed by name.",
-            ),
-        )
+        await self._send_file_always(ctx, lines, "sponsorlist")
 
-        # Paginated embeds for the two public lists
+        # Master embed pager (Summary + Current public + Past public)
+        summary_items = [counts.replace("**", "")]  # single paragraph
         current_items = sorted(curr_pub, key=str.lower)
         past_items = sorted(past_pub, key=str.lower)
-        if current_items:
-            await self._send_paginated_section(
-                ctx, f"Current (public) — {SPONSORABLE}", current_items, color=discord.Color.blurple()
-            )
-        if past_items:
-            await self._send_paginated_section(
-                ctx, f"Past (public) — {SPONSORABLE}", past_items, color=discord.Color.blurple()
-            )
+
+        sections: List[Tuple[str, List[str]]] = [
+            ("Summary", summary_items),
+            (f"Current (public) — {SPONSORABLE}", current_items),
+            (f"Past (public) — {SPONSORABLE}", past_items),
+        ]
+
+        icon_url = None
+        if ctx.guild and ctx.guild.icon:
+            try:
+                icon_url = ctx.guild.icon.url
+            except Exception:
+                pass
+
+        view = MasterPager(
+            owner_id=ctx.author.id,
+            title_prefix="Sponsor list",
+            sections=sections,
+            icon_url=icon_url,
+            color=discord.Color.blurple(),
+        )
+        await ctx.send(embed=view._make_embed(), view=view)
 
     async def _sponsorreport_core(self, ctx: commands.Context, limit: int):
         self._ensure_pat()
         if not self._pat:
-            return await self._send_pat_error(ctx)
+            return await ctx.send(embed=self._embed_err("GitHub token", "Not configured.", guild=ctx.guild))
 
         role = ctx.guild.get_role(SPONSOR_ROLE_ID)
         if not role:
             return await ctx.send(
-                embed=self._embed_err("Sponsor role not found", f"ID `{SPONSOR_ROLE_ID}`", guild=ctx.guild)
-            )
+                embed=self._embed_err("Sponsor role not found", f"ID `{SPONSOR_ROLE_ID}`", guild=ctx.guild))
 
         try:
             curr_pub, curr_priv, past_pub, past_priv = await self._fetch_all_sponsors()
         except GitHubAuthError as e:
-            return await self._send_pat_auth_message(ctx, e)
+            return await ctx.send(embed=self._embed_err("GitHub API", e.detail, guild=ctx.guild))
         except Exception as e:
             mylogger.exception("sponsorreport(): API failure")
             return await ctx.send(embed=self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
@@ -763,26 +863,21 @@ class SponsorCheck(commands.Cog):
         current_not_in_server = [gh for gh in sorted(current_all) if gh not in gh_to_member]
 
         summary = (
-            f"**Current GH sponsors:** **{current_total}** (public **{len(curr_pub)}**, private **{len(curr_priv)}**)\n"
-            f"**Past GH sponsors:** **{past_total}** (public **{len(past_pub)}**, private **{len(past_priv)}**)\n"
-            f"**Public union:** {public_union_n} • **Private union:** {private_union_n}\n"
-            f"**Discord members with Sponsor role:** {len(role_member_ids)}\n\n"
-            f"**Grant Sponsor role:** {len(grant_role)}\n"
-            f"**OK (current + role):** {len(ok_role)}\n"
-            f"**OK (past + role):** {len(lapsed_role)}\n"
-            f"**Has role but never sponsored (or needs mapping):** {len(never_role)}\n"
-            f"**Current sponsors not in server (GitHub usernames):** {len(current_not_in_server)}"
+            f"Current GH sponsors: {current_total} (public {len(curr_pub)}, private {len(curr_priv)})\n"
+            f"Past GH sponsors: {past_total} (public {len(past_pub)}, private {len(past_priv)})\n"
+            f"Public union: {public_union_n} • Private union: {private_union_n}\n"
+            f"Discord members with Sponsor role: {len(role_member_ids)}\n\n"
+            f"Grant Sponsor role: {len(grant_role)}\n"
+            f"OK (current + role): {len(ok_role)}\n"
+            f"OK (past + role): {len(lapsed_role)}\n"
+            f"Has role but never sponsored (or needs mapping): {len(never_role)}\n"
+            f"Current sponsors not in server (GitHub usernames): {len(current_not_in_server)}"
         )
 
-        # 1) Summary + full text attachment (as before)
-        lines: List[str] = []
-        lines.append(f"Summary for {SPONSORABLE}\n\n")
-        lines.append(summary + "\n\n")
-
+        # Always attach the full text file
         def section_block(title: str, items: List[str]) -> List[str]:
             out = [f"{title} ({len(items)}):\n"]
             if items:
-                # The file can be large; cap each section view in file by 'limit' and mention remainder
                 out.extend([f"- {i}" for i in items[:limit]])
                 if len(items) > limit:
                     out.append(f"…and {len(items) - limit} more")
@@ -791,6 +886,9 @@ class SponsorCheck(commands.Cog):
             out.append("\n")
             return out
 
+        lines: List[str] = []
+        lines.append(f"Summary for {SPONSORABLE}\n\n")
+        lines.append(summary + "\n\n")
         lines += section_block("Grant Sponsor role: current sponsors in the server without the Sponsor role",
                                grant_role)
         lines += section_block("OK (has role & is current sponsor)", ok_role)
@@ -798,38 +896,34 @@ class SponsorCheck(commands.Cog):
         lines += section_block("Has role but never sponsored (or needs mapping)", never_role)
         lines += section_block("Current sponsors not in server (GitHub usernames)", current_not_in_server)
         lines.append(
-            "Notes: Public and private sponsors come from the GitHub API via your PAT. "
-            "Private identities are matched for reconciliation but not printed.\n"
-        )
+            "Notes: Private identities come from the GitHub API via PAT; they’re matched for reconciliation but not printed.\n")
+        await self._send_file_always(ctx, lines, "sponsorreport")
 
-        await self._send_report(
-            ctx, lines, base_name="sponsorreport",
-            embed=self._embed_info("Sponsor report • Summary", summary, guild=ctx.guild)
-        )
+        # Build master pager sections
+        icon_url = None
+        if ctx.guild and ctx.guild.icon:
+            try:
+                icon_url = ctx.guild.icon.url
+            except Exception:
+                pass
 
-        # 2) Paginated embeds per section (nice in-channel browsing)
-        if grant_role:
-            await self._send_paginated_section(
-                ctx, "Grant Sponsor role — current sponsors in server without the role", grant_role,
-                color=discord.Color.green()
-            )
-        if ok_role:
-            await self._send_paginated_section(
-                ctx, "OK (has role & is current sponsor)", ok_role, color=discord.Color.blurple()
-            )
-        if lapsed_role:
-            await self._send_paginated_section(
-                ctx, "OK (past & has role)", lapsed_role, color=discord.Color.gold()
-            )
-        if never_role:
-            await self._send_paginated_section(
-                ctx, "Has role but never sponsored (or needs mapping)", never_role, color=discord.Color.red()
-            )
-        if current_not_in_server:
-            await self._send_paginated_section(
-                ctx, "Current sponsors not in server (GitHub usernames)", current_not_in_server,
-                color=discord.Color.blurple()
-            )
+        sections: List[Tuple[str, List[str]]] = [
+            ("Summary", [summary.replace("**", "")]),
+            ("Grant Sponsor role (current in server without role)", grant_role),
+            ("OK (current + role)", ok_role),
+            ("OK (past + role)", lapsed_role),
+            ("Has role but never sponsored (or needs mapping)", never_role),
+            ("Current sponsors not in server (GitHub usernames)", current_not_in_server),
+        ]
+
+        view = MasterPager(
+            owner_id=ctx.author.id,
+            title_prefix="Sponsor report",
+            sections=sections,
+            icon_url=icon_url,
+            color=discord.Color.blurple(),
+        )
+        await ctx.send(embed=view._make_embed(), view=view)
 
     # =====================================================================
     # Prefix commands
@@ -860,13 +954,14 @@ class SponsorCheck(commands.Cog):
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsor_core(ctx, username)
 
-    @app_commands.command(name="sponsorlist", description="List public sponsors; show private counts.")
+    @app_commands.command(name="sponsorlist", description="List public sponsors (master embed + file).")
     async def sponsorlist_slash(self, interaction: discord.Interaction):
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsorlist_core(ctx)
 
-    @app_commands.command(name="sponsorreport", description="Actionable reconciliation report (now paginated).")
-    @app_commands.describe(limit="Max lines per section in the text attachment (default 2000)")
+    @app_commands.command(name="sponsorreport",
+                          description="Reconciliation report (summary + sections; master embed + file).")
+    @app_commands.describe(limit="Max lines per section written into the attached text file (default 2000)")
     async def sponsorreport_slash(self, interaction: discord.Interaction, limit: int = 2000):
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsorreport_core(ctx, limit)
