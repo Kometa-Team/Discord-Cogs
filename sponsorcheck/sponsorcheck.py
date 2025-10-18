@@ -120,17 +120,17 @@ class MasterPager(discord.ui.View):
     """
 
     def __init__(
-        self,
-        *,
-        author_id: int,
-        guild: discord.Guild,
-        allowed_role_ids: Set[int],
-        title_prefix: str,
-        sections: List[Tuple[str, List[str]]],  # [(title, items)]
-        icon_url: Optional[str],
-        color: discord.Color,                    # default/fallback color
-        section_colors: Optional[List[discord.Color]] = None,
-        timeout: float = VIEW_TIMEOUT_SECONDS,
+            self,
+            *,
+            author_id: int,
+            guild: discord.Guild,
+            allowed_role_ids: Set[int],
+            title_prefix: str,
+            sections: List[Tuple[str, List[str]]],  # [(title, items)]
+            icon_url: Optional[str],
+            color: discord.Color,  # default/fallback color
+            section_colors: Optional[List[discord.Color]] = None,
+            timeout: float = VIEW_TIMEOUT_SECONDS,
     ):
         super().__init__(timeout=timeout)
         self.author_id = author_id
@@ -177,14 +177,14 @@ class MasterPager(discord.ui.View):
         self.btn_close.callback = self._on_close
 
         for b in (
-            self.btn_first,
-            self.btn_prev,
-            self.btn_next,
-            self.btn_last,
-            self.btn_goto,
-            self.btn_search,
-            self.btn_clear,
-            self.btn_close,
+                self.btn_first,
+                self.btn_prev,
+                self.btn_next,
+                self.btn_last,
+                self.btn_goto,
+                self.btn_search,
+                self.btn_clear,
+                self.btn_close,
         ):
             self.add_item(b)
 
@@ -349,7 +349,7 @@ class MasterPager(discord.ui.View):
             except Exception:
                 pass
         e.set_footer(
-            text=f"Page {self.page_index+1}/{len(self.pages[self.section_index])} • Buttons disable after {VIEW_TIMEOUT_SECONDS//60}m"
+            text=f"Page {self.page_index + 1}/{len(self.pages[self.section_index])} • Buttons disable after {VIEW_TIMEOUT_SECONDS // 60}m"
         )
         return e
 
@@ -470,12 +470,12 @@ class SponsorCheck(commands.Cog):
             return gh_map, v_ids, v_names
 
     async def _set_maps(
-        self,
-        guild: discord.Guild,
-        *,
-        gh_map: dict | None = None,
-        verified_ids: set[int] | None = None,
-        verified_names: set[str] | None = None,
+            self,
+            guild: discord.Guild,
+            *,
+            gh_map: dict | None = None,
+            verified_ids: set[int] | None = None,
+            verified_names: set[str] | None = None,
     ):
         async with self._maps_lock:
             g = self._guild_bucket(guild)
@@ -544,7 +544,8 @@ class SponsorCheck(commands.Cog):
     def _safe_desc(self, text: str) -> str:
         return (text or "") + "\u200b"
 
-    def _embed(self, title: str, desc: str, *, color: discord.Color, guild: Optional[discord.Guild] = None) -> discord.Embed:
+    def _embed(self, title: str, desc: str, *, color: discord.Color,
+               guild: Optional[discord.Guild] = None) -> discord.Embed:
         e = discord.Embed(title=title, description=self._safe_desc(desc), color=color)
         e.set_author(name="SponsorCheck")
         if guild and guild.icon:
@@ -554,10 +555,17 @@ class SponsorCheck(commands.Cog):
                 pass
         return e
 
-    def _embed_ok(self, t, d, **kw):   return self._embed(t, d, color=discord.Color.green(), **kw)
-    def _embed_warn(self, t, d, **kw): return self._embed(t, d, color=discord.Color.gold(), **kw)
-    def _embed_err(self, t, d, **kw):  return self._embed(t, d, color=discord.Color.red(), **kw)
-    def _embed_info(self, t, d, **kw): return self._embed(t, d, color=discord.Color.blurple(), **kw)
+    def _embed_ok(self, t, d, **kw):
+        return self._embed(t, d, color=discord.Color.green(), **kw)
+
+    def _embed_warn(self, t, d, **kw):
+        return self._embed(t, d, color=discord.Color.gold(), **kw)
+
+    def _embed_err(self, t, d, **kw):
+        return self._embed(t, d, color=discord.Color.red(), **kw)
+
+    def _embed_info(self, t, d, **kw):
+        return self._embed(t, d, color=discord.Color.blurple(), **kw)
 
     # ---------- Logging helpers ----------
     def _tag_user(self, u: discord.abc.User) -> str:
@@ -625,7 +633,8 @@ class SponsorCheck(commands.Cog):
                 return m
         return None
 
-    def _attach_person_avatars(self, embed: discord.Embed, member: Optional[discord.Member], gh_avatar: Optional[str]) -> None:
+    def _attach_person_avatars(self, embed: discord.Embed, member: Optional[discord.Member],
+                               gh_avatar: Optional[str]) -> None:
         try:
             if member:
                 embed.set_thumbnail(url=member.display_avatar.url)
@@ -800,6 +809,15 @@ class SponsorCheck(commands.Cog):
                             cands.append(stripped_tail)
         return cands
 
+    async def _fetch_union_logins(self) -> Set[str]:
+        """All sponsor logins (current+past, public+private), lowercased."""
+        self._ensure_pat()
+        if not self._pat:
+            raise GitHubAuthError("missing_pat", "GitHub token not configured")
+        curr_pub, curr_priv, past_pub, past_priv = await self._fetch_all_sponsors()
+        union = {u.lower() for u in (curr_pub | curr_priv | past_pub | past_priv)}
+        return union
+
     async def _sponsor_core(self, ctx: commands.Context, username: str):
         self._log_invoke_ctx(ctx, "Sponsor")
         self._ensure_pat()
@@ -844,24 +862,28 @@ class SponsorCheck(commands.Cog):
         if t in union_public:
             status = "current" if t in current_public else "past"
             gh_avatar = await self._github_avatar(target)
-            em = self._embed_ok("Sponsor check", f"**{target}** is a **{status}** public sponsor of **{SPONSORABLE}**.", guild=ctx.guild)
+            em = self._embed_ok("Sponsor check", f"**{target}** is a **{status}** public sponsor of **{SPONSORABLE}**.",
+                                guild=ctx.guild)
             self._attach_person_avatars(em, possible_member, gh_avatar)
             if possible_member:
                 ok, msg = await self._try_grant_role(ctx.guild, possible_member)
                 em.add_field(name="Role action", value=msg, inline=False)
-                mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id, possible_member.id, ok, msg)
+                mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id,
+                              possible_member.id, ok, msg)
             return await ctx.send(embed=em)
 
         # Direct private
         if t in union_private:
             status = "current" if t in current_private else "past"
-            em = self._embed_warn("Sponsor check", f"**{target}** is a **{status}** sponsor of **{SPONSORABLE}**.", guild=ctx.guild)
+            em = self._embed_warn("Sponsor check", f"**{target}** is a **{status}** sponsor of **{SPONSORABLE}**.",
+                                  guild=ctx.guild)
             em.add_field(name="Privacy", value="Private", inline=True)
             self._attach_person_avatars(em, possible_member, None)
             if possible_member:
                 ok, msg = await self._try_grant_role(ctx.guild, possible_member)
                 em.add_field(name="Role action", value=msg, inline=False)
-                mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id, possible_member.id, ok, msg)
+                mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id,
+                              possible_member.id, ok, msg)
             return await ctx.send(embed=em)
 
         # KSN/DSN → GH candidates
@@ -878,23 +900,29 @@ class SponsorCheck(commands.Cog):
                 if lc in union_public:
                     status = "current" if lc in current_public else "past"
                     gh_avatar = await self._github_avatar(cand)
-                    em = self._embed_ok("Sponsor check", f"**{ksn}** → **{dsn}** → **{status}** public sponsor of **{SPONSORABLE}**.", guild=ctx.guild)
+                    em = self._embed_ok("Sponsor check",
+                                        f"**{ksn}** → **{dsn}** → **{status}** public sponsor of **{SPONSORABLE}**.",
+                                        guild=ctx.guild)
                     self._attach_person_avatars(em, candidate_member, gh_avatar)
                     ok, msg = await self._try_grant_role(ctx.guild, candidate_member)
                     em.add_field(name="Role action", value=msg, inline=False)
-                    mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id, candidate_member.id, ok, msg)
+                    mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id,
+                                  candidate_member.id, ok, msg)
                     return await ctx.send(embed=em)
 
             for cand in candidates:
                 lc = cand.lower()
                 if lc in union_private:
                     status = "current" if lc in current_private else "past"
-                    em = self._embed_warn("Sponsor check", f"**{ksn}** → **{dsn}** → **{status}** sponsor of **{SPONSORABLE}**.", guild=ctx.guild)
+                    em = self._embed_warn("Sponsor check",
+                                          f"**{ksn}** → **{dsn}** → **{status}** sponsor of **{SPONSORABLE}**.",
+                                          guild=ctx.guild)
                     em.add_field(name="Privacy", value="Private", inline=True)
                     self._attach_person_avatars(em, candidate_member, None)
                     ok, msg = await self._try_grant_role(ctx.guild, candidate_member)
                     em.add_field(name="Role action", value=msg, inline=False)
-                    mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id, candidate_member.id, ok, msg)
+                    mylogger.info("Role grant attempt: guild=%s member=%s result=%s detail=%s", ctx.guild.id,
+                                  candidate_member.id, ok, msg)
                     return await ctx.send(embed=em)
 
         # Not found → if user already has the role, warn about mismatch
@@ -927,7 +955,9 @@ class SponsorCheck(commands.Cog):
             return await ctx.send(embed=em)
 
         # Hard not-found
-        em = self._embed_err("Sponsor check", f"**{target}** does not appear as a sponsor of **{SPONSORABLE}** (current or past).", guild=ctx.guild)
+        em = self._embed_err("Sponsor check",
+                             f"**{target}** does not appear as a sponsor of **{SPONSORABLE}** (current or past).",
+                             guild=ctx.guild)
         if possible_member:
             try:
                 em.set_thumbnail(url=possible_member.display_avatar.url)
@@ -986,8 +1016,8 @@ class SponsorCheck(commands.Cog):
 
         section_colors = [
             discord.Color.blurple(),  # Summary
-            discord.Color.green(),    # Current public
-            discord.Color.orange(),   # Past public
+            discord.Color.green(),  # Current public
+            discord.Color.orange(),  # Past public
         ]
 
         view = MasterPager(
@@ -1010,7 +1040,8 @@ class SponsorCheck(commands.Cog):
 
         role = ctx.guild.get_role(SPONSOR_ROLE_ID)
         if not role:
-            return await ctx.send(embed=self._embed_err("Sponsor role not found", f"ID `{SPONSOR_ROLE_ID}`", guild=ctx.guild))
+            return await ctx.send(
+                embed=self._embed_err("Sponsor role not found", f"ID `{SPONSOR_ROLE_ID}`", guild=ctx.guild))
 
         gh_map, verified_ids, verified_names = await self._get_maps(ctx.guild)
         mylogger.info("Mappings loaded for guild %s: %d map(s), %d private IDs, %d private names",
@@ -1109,12 +1140,14 @@ class SponsorCheck(commands.Cog):
         lines: List[str] = []
         lines.append(f"Summary for {SPONSORABLE}\n\n")
         lines.append(summary + "\n\n")
-        lines += section_block("Grant Sponsor role: current sponsors in the server without the Sponsor role", grant_role)
+        lines += section_block("Grant Sponsor role: current sponsors in the server without the Sponsor role",
+                               grant_role)
         lines += section_block("OK (has role & is current sponsor)", ok_role)
         lines += section_block("OK (past & has role)", lapsed_role)
         lines += section_block("Has role but never sponsored (or needs mapping)", never_role)
         lines += section_block("Current sponsors not in server (GitHub usernames)", current_not_in_server)
-        lines.append("Notes: Private identities come from the GitHub API via PAT; they’re matched for reconciliation but not printed.\n")
+        lines.append(
+            "Notes: Private identities come from the GitHub API via PAT; they’re matched for reconciliation but not printed.\n")
         await self._send_file_always(ctx, lines, "sponsorreport")
 
         # Build master pager sections
@@ -1137,11 +1170,11 @@ class SponsorCheck(commands.Cog):
         # Requested colors (exact order)
         section_colors = [
             discord.Color.blurple(),  # Summary
-            discord.Color.green(),    # Grant Sponsor role
-            discord.Color.orange(),   # OK (current + role)
-            discord.Color.green(),    # OK (past + role)
-            discord.Color.yellow(),   # Has role but never sponsored
-            discord.Color.red(),      # Current sponsors not in server
+            discord.Color.green(),  # Grant Sponsor role
+            discord.Color.orange(),  # OK (current + role)
+            discord.Color.green(),  # OK (past + role)
+            discord.Color.yellow(),  # Has role but never sponsored
+            discord.Color.red(),  # Current sponsors not in server
         ]
 
         view = MasterPager(
@@ -1190,7 +1223,8 @@ class SponsorCheck(commands.Cog):
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsorlist_core(ctx)
 
-    @app_commands.command(name="sponsorreport", description="Reconciliation report (summary + sections; master embed + file).")
+    @app_commands.command(name="sponsorreport",
+                          description="Reconciliation report (summary + sections; master embed + file).")
     @app_commands.describe(limit="Max lines per section written into the attached text file (default 2000)")
     async def sponsorreport_slash(self, interaction: discord.Interaction, limit: int = 2000):
         self._log_invoke_inter(interaction, "Sponsorreport")
@@ -1253,14 +1287,47 @@ class SponsorConfigGroup(app_commands.Group):
         )
         await interaction.response.send_message(text, ephemeral=True)
 
-    @app_commands.command(name="map_add", description="Map a Discord user to a GitHub login.")
-    @app_commands.describe(member="Discord member", github_login="GitHub username (login)")
+    @app_commands.command(name="map_add",
+                          description="Map a Discord user to a GitHub login (must exist in GH sponsors).")
+    @app_commands.describe(member="Discord member (must already have Sponsor role)",
+                           github_login="GitHub username (login), must be in current/past sponsors")
     async def map_add(self, interaction: discord.Interaction, member: discord.Member, github_login: str):
         self._log(interaction, "map_add")
+
+        # permissions
+        mem = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not mem or not _is_staff(mem):
+            return await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
+
+        # 1) Require the member already has the Sponsor role
+        role = interaction.guild.get_role(SPONSOR_ROLE_ID)
+        if not role or role not in member.roles:
+            return await interaction.response.send_message(
+                f"❌ **Policy**: The member must already have the **{role.name if role else 'Sponsor'}** role before mapping.\n"
+                f"Grant the role first (e.g., via `/sponsor <user>` or manually), then retry.",
+                ephemeral=True
+            )
+
+        # 2) Verify the GH login exists in union(current/past, public/private)
+        gl = github_login.strip().lstrip("@").lower()
+        try:
+            union = await self.cog._fetch_union_logins()
+        except GitHubAuthError as e:
+            return await interaction.response.send_message(f"GitHub API error: {e.detail}", ephemeral=True)
+        if gl not in union:
+            return await interaction.response.send_message(
+                "❌ The GitHub login you provided **is not found** in the maintainer’s **current or past** sponsor lists "
+                "(public or private).\n"
+                "• Double-check the login\n"
+                "• If this user sponsors **outside GitHub**, use **/sponsorconfig private_add** instead.",
+                ephemeral=True
+            )
+
+        # 3) Save the mapping
         gh_map, v_ids, v_names = await self.cog._get_maps(interaction.guild)
-        gh_map[str(member.id)] = github_login.strip().lstrip("@")
+        gh_map[str(member.id)] = gl
         await self.cog._set_maps(interaction.guild, gh_map=gh_map)
-        await interaction.response.send_message(f"Mapped **{member}** → `{github_login}`", ephemeral=True)
+        await interaction.response.send_message(f"✅ Mapped **{member}** → `{gl}`", ephemeral=True)
 
     @app_commands.command(name="map_remove", description="Remove a Discord→GitHub mapping.")
     @app_commands.describe(member="Discord member")
@@ -1281,15 +1348,20 @@ class SponsorConfigGroup(app_commands.Group):
         lines = [f"- <@{k}> → `{v}`" for k, v in gh_map.items()]
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
-    @app_commands.command(name="private_add", description="Verify a private sponsor (Discord).")
-    @app_commands.describe(member="Discord member (current private sponsor)")
+    @app_commands.command(name="private_add",
+                          description="Mark a Discord member as a verified private sponsor (off-GitHub).")
+    @app_commands.describe(member="Discord member who sponsors outside GitHub lists")
     async def private_add(self, interaction: discord.Interaction, member: discord.Member):
         self._log(interaction, "private_add")
         gh_map, v_ids, v_names = await self.cog._get_maps(interaction.guild)
         v_ids.add(member.id)
         v_names.add((member.name or "").lower())
         await self.cog._set_maps(interaction.guild, verified_ids=v_ids, verified_names=v_names)
-        await interaction.response.send_message(f"Marked **{member}** as verified private sponsor.", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ Marked **{member}** as a **verified private sponsor (off-GitHub)**.\n"
+            f"_They’ll be treated as **current** in reconciliation and `/sponsor` checks._",
+            ephemeral=True
+        )
 
     @app_commands.command(name="private_remove", description="Unverify a private sponsor (Discord).")
     @app_commands.describe(member="Discord member")
