@@ -778,9 +778,10 @@ class SponsorCheck(commands.Cog):
             return await ctx.send(embed=self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
 
         counts = (
-            f"**Current sponsors:** **{len(curr_pub) + len(curr_priv)}** "
+            "### **Overview**\n"
+            f"🟢 **Current sponsors:** **{len(curr_pub) + len(curr_priv)}**  "
             f"(public **{len(curr_pub)}**, private **{len(curr_priv)}**)\n"
-            f"**Past sponsors:** **{len(past_pub) + len(past_priv)}** "
+            f"🕓 **Past sponsors:** **{len(past_pub) + len(past_priv)}**  "
             f"(public **{len(past_pub)}**, private **{len(past_priv)}**)"
         )
 
@@ -900,16 +901,22 @@ class SponsorCheck(commands.Cog):
 
         current_not_in_server = [gh for gh in sorted(current_all) if gh not in gh_to_member]
 
+        # --- pretty summary (mobile-friendly, emoji bullets) ---
         summary = (
-            f"Current GH sponsors: {current_total} (public {len(curr_pub)}, private {len(curr_priv)})\n"
-            f"Past GH sponsors: {past_total} (public {len(past_pub)}, private {len(past_priv)})\n"
-            f"Public union: {public_union_n} • Private union: {private_union_n}\n"
-            f"Discord members with Sponsor role: {len(role_member_ids)}\n\n"
-            f"Grant Sponsor role: {len(grant_role)}\n"
-            f"OK (current + role): {len(ok_role)}\n"
-            f"OK (past + role): {len(lapsed_role)}\n"
-            f"Has role but never sponsored (or needs mapping): {len(never_role)}\n"
-            f"Current sponsors not in server (GitHub usernames): {len(current_not_in_server)}"
+            "### **Overview**\n"
+            f"🟢 **Current GH sponsors:** **{current_total}**  "
+            f"(public **{len(curr_pub)}**, private **{len(curr_priv)}**)\n"
+            f"🕓 **Past GH sponsors:** **{past_total}**  "
+            f"(public **{len(past_pub)}**, private **{len(past_priv)}**)\n"
+            f"🔷 **Public union:** **{public_union_n}**   •   🕵️ **Private union:** **{private_union_n}**\n"
+            f"👥 **Discord members with _Sponsor_ role:** **{len(role_member_ids)}**\n"
+            "\n"
+            "### **Actions & reconciliation**\n"
+            f"➕ **Grant Sponsor role:** **{len(grant_role)}**\n"
+            f"✅ **OK (current + role):** **{len(ok_role)}**\n"
+            f"🟡 **OK (past + role):** **{len(lapsed_role)}**\n"
+            f"⚠️ **Has role but never sponsored (or needs mapping):** **{len(never_role)}**\n"
+            f"🚪 **Current sponsors not in server (GitHub):** **{len(current_not_in_server)}**"
         )
 
         # Always attach the full text file
