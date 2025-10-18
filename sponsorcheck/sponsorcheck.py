@@ -636,9 +636,9 @@ class SponsorCheck(commands.Cog):
             f"**Discord members with Sponsor role:** {len(role_member_ids)}\n\n"
             f"**Grant Sponsor role:** {len(grant_role)}\n"
             f"**OK (current + role):** {len(ok_role)}\n"
-            f"**Has role but lapsed (past-only):** {len(lapsed_role)}\n"
-            f"**Has role but never sponsored:** {len(never_role)}\n"
-            f"**Current sponsors not in server (GitHub):** {len(current_not_in_server)}"
+            f"**OK (past + role):** {len(lapsed_role)}\n"
+            f"**Has role but never sponsored (or needs mapping):** {len(never_role)}\n"
+            f"**Current sponsors not in server (GitHub usernames):** {len(current_not_in_server)}"
         )
 
         def section_block(title: str, items: List[str]) -> List[str]:
@@ -656,8 +656,8 @@ class SponsorCheck(commands.Cog):
         lines.append(f"Summary for {SPONSORABLE}\n\n")
         lines.append(summary + "\n\n")
         lines += section_block("Grant Sponsor role: current sponsors in the server without the Sponsor role", grant_role)
-        lines += section_block("OK (has role & is current sponsor)", ok_role)
-        lines += section_block("Has role but lapsed (past-only)", lapsed_role)
+        lines += section_block("OK (current + role)", ok_role)
+        lines += section_block("OK (past + role)", lapsed_role)
         lines += section_block("Has role but never sponsored (or needs mapping)", never_role)
         lines += section_block("Current sponsors not in server (GitHub usernames)", current_not_in_server)
         lines.append(
