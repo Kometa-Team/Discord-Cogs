@@ -778,7 +778,7 @@ class SponsorCheck(commands.Cog):
             return await ctx.send(embed=self._embed_err("GitHub API error", f"`{e}`", guild=ctx.guild))
 
         counts = (
-            "### **Overview**\n"
+            "**Overview**\n"
             f"🟢 **Current sponsors:** **{len(curr_pub) + len(curr_priv)}**  "
             f"(public **{len(curr_pub)}**, private **{len(curr_priv)}**)\n"
             f"🕓 **Past sponsors:** **{len(past_pub) + len(past_priv)}**  "
@@ -903,7 +903,7 @@ class SponsorCheck(commands.Cog):
 
         # --- pretty summary (mobile-friendly, emoji bullets) ---
         summary = (
-            "### **Overview**\n"
+            "**Overview**\n"
             f"🟢 **Current GH sponsors:** **{current_total}**  "
             f"(public **{len(curr_pub)}**, private **{len(curr_priv)}**)\n"
             f"🕓 **Past GH sponsors:** **{past_total}**  "
@@ -911,7 +911,7 @@ class SponsorCheck(commands.Cog):
             f"🔷 **Public union:** **{public_union_n}**   •   🕵️ **Private union:** **{private_union_n}**\n"
             f"👥 **Discord members with _Sponsor_ role:** **{len(role_member_ids)}**\n"
             "\n"
-            "### **Actions & reconciliation**\n"
+            "**Actions & reconciliation**\n"
             f"➕ **Grant Sponsor role:** **{len(grant_role)}**\n"
             f"✅ **OK (current + role):** **{len(ok_role)}**\n"
             f"🟡 **OK (past + role):** **{len(lapsed_role)}**\n"
