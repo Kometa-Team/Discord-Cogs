@@ -172,8 +172,28 @@ class MasterPager(discord.ui.View):
             self.add_item(b)
 
     # Only the invoker can operate the controls
+    # inside class MasterPager(discord.ui.View):
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == self.owner_id
+        """Allow the original invoker, staff roles, or users with Manage Server to drive the pager."""
+        if interaction.user.id == self.owner_id:
+            return True
+
+        guild = interaction.guild
+        if not guild:
+            return False
+
+        member = guild.get_member(interaction.user.id)
+        if not member:
+            return False
+
+        # Allow if they have one of the allowed roles or Manage Server
+        user_role_ids = {r.id for r in member.roles}
+        if (ALLOWED_ROLE_IDS & user_role_ids) or member.guild_permissions.manage_guild:
+            return True
+
+        # Otherwise, ignore their button presses
+        return False
 
     async def on_timeout(self):
         for c in self.children:
