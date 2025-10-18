@@ -796,7 +796,7 @@ class SponsorCheck(commands.Cog):
         await self._send_file_always(ctx, lines, "sponsorlist")
 
         # Master embed pager (Summary + Current public + Past public)
-        summary_items = [counts.replace("**", "")]
+        summary_items = [counts]
         current_items = sorted(curr_pub, key=str.lower)
         past_items = sorted(past_pub, key=str.lower)
 
@@ -953,7 +953,7 @@ class SponsorCheck(commands.Cog):
                 pass
 
         sections: List[Tuple[str, List[str]]] = [
-            ("Summary", [summary.replace("**", "")]),
+            ("Summary", [summary]),
             ("Grant Sponsor role (current in server without role)", grant_role),
             ("OK (current + role)", ok_role),
             ("OK (past + role)", lapsed_role),
