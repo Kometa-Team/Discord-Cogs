@@ -494,40 +494,44 @@ class SponsorCheck(commands.Cog):
         gobj = discord.Object(id=KOMETA_GUILD_ID)
 
         try:
-            # --- Remove any stale global or guild versions to avoid name collisions ---
+            # --- NEW: stop Red from re-adding stale GLOBAL commands with these names ---
+            try:
+                disabled = getattr(self.bot.tree, "_disabled_global_commands", None)
+                if isinstance(disabled, dict):
+                    for nm in ("sponsor", "sponsorlist", "sponsorreport", "sponsorconfig"):
+                        disabled.pop(nm, None)
+            except Exception as e:
+                mylogger.debug("Could not prune disabled globals (ok): %s", e)
+
+            # --- remove any existing global/guild copies (idempotent) ---
             for name in ("sponsor", "sponsorlist", "sponsorreport", "sponsorconfig"):
-                # Remove GLOBAL (no guild) if present
                 try:
                     self.bot.tree.remove_command(name, type=discord.AppCommandType.chat_input)
                 except Exception:
                     pass
-                # Remove Kometa-guild scoped if present
                 try:
                     self.bot.tree.remove_command(name, type=discord.AppCommandType.chat_input, guild=gobj)
                 except Exception:
                     pass
 
-            # 1) Add /sponsorconfig group (guild-scoped)
+            # --- add guild-scoped commands explicitly ---
             group = SponsorConfigGroup(self)
             self.bot.tree.add_command(group, guild=gobj)
-
-            # 2) Add the three top-level slash commands (guild-scoped)
             self.bot.tree.add_command(self.sponsor_slash, guild=gobj)
             self.bot.tree.add_command(self.sponsorlist_slash, guild=gobj)
             self.bot.tree.add_command(self.sponsorreport_slash, guild=gobj)
 
-            # 3) Single, deterministic guild sync
+            # --- one deterministic guild sync ---
             synced = await self.bot.tree.sync(guild=gobj)
             mylogger.info(
                 "SponsorCheck: guild sync returned %d commands: %s",
-                len(synced),
-                ", ".join(sorted(c.name for c in synced)),
+                len(synced), ", ".join(sorted(c.name for c in synced)),
             )
             mylogger.info("SponsorCheck: synced app commands to Kometa guild %s.", KOMETA_GUILD_ID)
 
         except Exception as e:
             mylogger.error(f"SponsorCheck slash sync error: {e}")
-
+            
 # ---------- Token helpers ----------
     def _load_pat(self, initial: bool = False, force: bool = False) -> None:
         if self._pat and not force:
