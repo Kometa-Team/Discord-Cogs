@@ -1211,11 +1211,12 @@ class SponsorCheck(commands.Cog):
     # Slash commands (top-level)
     # =====================================================================
     @app_commands.command(name="sponsor", description="Check a user’s GitHub sponsor status.")
-    @app_commands.describe(username="Type a Discord name or a mapped GitHub login")
-    async def sponsor_slash(self, interaction: discord.Interaction, username: str):
+    @app_commands.describe(user="Select a Discord user from the server list")
+    async def sponsor_slash(self, interaction: discord.Interaction, user: discord.Member):
+        """Uses Discord's built-in member picker for autocomplete."""
         self._log_invoke_inter(interaction, "Sponsor")
         ctx = await commands.Context.from_interaction(interaction)
-        await self._sponsor_core(ctx, username)
+        await self._sponsor_core(ctx, user.display_name)
 
     @sponsor_slash.autocomplete("username")
     async def sponsor_username_autocomplete(
