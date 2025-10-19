@@ -1211,11 +1211,75 @@ class SponsorCheck(commands.Cog):
     # Slash commands (top-level)
     # =====================================================================
     @app_commands.command(name="sponsor", description="Check a user’s GitHub sponsor status.")
-    @app_commands.describe(username="GitHub or Discord name to check")
+    @app_commands.describe(username="Type a Discord name or a mapped GitHub login")
     async def sponsor_slash(self, interaction: discord.Interaction, username: str):
         self._log_invoke_inter(interaction, "Sponsor")
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsor_core(ctx, username)
+
+    @sponsor_slash.autocomplete("username")
+    async def sponsor_username_autocomplete(
+            self,
+            interaction: discord.Interaction,
+            current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """
+        Suggest only:
+          • Discord members (display name / username)
+          • Known Discord→GitHub mappings from the saved store
+        No GitHub API calls here.
+        """
+        cur = (current or "").lower().strip()
+        choices: list[app_commands.Choice[str]] = []
+
+        guild = interaction.guild
+        # 1) Discord members in this guild
+        if guild:
+            member_hits = []
+            for m in guild.members:
+                dn = (m.display_name or "").strip()
+                un = (m.name or "").strip()
+                label_src = dn or un
+                if not label_src:
+                    continue
+                # substring match on either display name or username
+                if not cur or cur in dn.lower() or cur in un.lower():
+                    disc = getattr(m, "discriminator", "0")
+                    tag = f"{m.name}#{disc}" if disc and disc != "0" else f"{m.name}#0"
+                    label = f"👤 {dn} ({tag})" if dn and dn != un else f"👤 {tag}"
+                    # the value we pass back is the thing your command accepts (string)
+                    member_hits.append((label, dn or un))
+                    if len(member_hits) >= 12:
+                        break
+            for label, value in member_hits:
+                choices.append(app_commands.Choice(name=label, value=value))
+
+        # 2) Known Discord→GitHub mappings (file-backed)
+        try:
+            gh_map, _, _ = await self._get_maps(guild) if guild else ({}, set(), set())
+        except Exception:
+            gh_map = {}
+        mapped_hits = []
+        for uid, gh in gh_map.items():
+            if not gh:
+                continue
+            if not cur or cur in gh.lower():
+                mapped_hits.append((f"🔗 mapped GH: {gh}", gh))
+                if len(mapped_hits) >= 12:
+                    break
+        for label, value in mapped_hits:
+            choices.append(app_commands.Choice(name=label, value=value))
+
+        # Discord caps autocomplete at 25 items total
+        # Also dedupe by (name, value) just in case
+        seen = set()
+        deduped = []
+        for c in choices:
+            key = (c.name, c.value)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(c)
+        return deduped[:25]
 
     @app_commands.command(name="sponsorlist", description="List public sponsors (master embed + file).")
     async def sponsorlist_slash(self, interaction: discord.Interaction):
