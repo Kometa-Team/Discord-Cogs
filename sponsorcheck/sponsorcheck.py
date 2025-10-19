@@ -497,6 +497,9 @@ class SponsorCheck(commands.Cog):
             gobj = discord.Object(id=KOMETA_GUILD_ID)
             self.bot.tree.add_command(group, guild=gobj)
             await self.bot.tree.sync(guild=gobj)
+            synced = await self.bot.tree.sync(guild=gobj)
+            mylogger.info("SponsorCheck: guild sync returned %d commands: %s",
+                          len(synced), ", ".join(sorted(c.name for c in synced)))
             mylogger.info(f"SponsorCheck: synced app commands to Kometa guild {KOMETA_GUILD_ID}.")
         except Exception as e:
             mylogger.error(f"SponsorCheck slash sync error: {e}")
