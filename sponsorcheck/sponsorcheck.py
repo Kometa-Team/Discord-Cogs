@@ -1198,12 +1198,15 @@ class SponsorCheck(commands.Cog):
     # Slash commands (top-level)
     # =====================================================================
     @app_commands.guilds(discord.Object(id=KOMETA_GUILD_ID))
-    @app_commands.command(name="sponsor", description="Check a user’s GitHub sponsor status.")
-    @app_commands.describe(username="GitHub or Discord name to check")
-    async def sponsor_slash(self, interaction: discord.Interaction, username: str):
+    @app_commands.command(name="sponsor", description="Check a user’s sponsor status (pick a Discord member).")
+    @app_commands.describe(member="Discord member to check")
+    async def sponsor_slash(self, interaction: discord.Interaction, member: discord.Member):
         self._log_invoke_inter(interaction, "Sponsor")
         ctx = await commands.Context.from_interaction(interaction)
-        await self._sponsor_core(ctx, username)
+        # Prefer mapped GitHub login for accuracy; fall back to the member's username/display name.
+        gh_map, _, _ = await self._get_maps(ctx.guild)
+        target = gh_map.get(str(member.id)) or (member.name or member.display_name or str(member.id))
+        await self._sponsor_core(ctx, target)
 
     @app_commands.guilds(discord.Object(id=KOMETA_GUILD_ID))
     @app_commands.command(name="sponsorlist", description="List public sponsors (master embed + file).")
