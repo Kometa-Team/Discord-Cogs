@@ -488,49 +488,60 @@ class SponsorCheck(commands.Cog):
         await self._save_store()
 
     # ---------- Slash sync + store load ----------
+    # ---------- Slash sync + store load ----------
     async def cog_load(self) -> None:
+        # Load mappings store first
         await self._load_store()
+        # Defer registration until AFTER Red's red_check_enabled() completes
+        asyncio.create_task(self._register_commands_after_red())
+
+    async def _register_commands_after_red(self) -> None:
+        # Let Red finish red_check_enabled() (which may re-add disabled globals)
+        await asyncio.sleep(0.5)
 
         gobj = discord.Object(id=KOMETA_GUILD_ID)
 
+        # 1) Prune Red’s disabled-global cache for our names (prevents re-adding globals)
         try:
-            # --- NEW: stop Red from re-adding stale GLOBAL commands with these names ---
+            disabled = getattr(self.bot.tree, "_disabled_global_commands", None)
+            if isinstance(disabled, dict):
+                for nm in ("sponsor", "sponsorlist", "sponsorreport", "sponsorconfig"):
+                    disabled.pop(nm, None)
+        except Exception:
+            pass  # best-effort; safe to ignore
+
+        # 2) Remove any lingering GLOBAL and GUILD copies (idempotent, avoids collisions)
+        for name in ("sponsor", "sponsorlist", "sponsorreport", "sponsorconfig"):
             try:
-                disabled = getattr(self.bot.tree, "_disabled_global_commands", None)
-                if isinstance(disabled, dict):
-                    for nm in ("sponsor", "sponsorlist", "sponsorreport", "sponsorconfig"):
-                        disabled.pop(nm, None)
-            except Exception as e:
-                mylogger.debug("Could not prune disabled globals (ok): %s", e)
+                self.bot.tree.remove_command(name, type=discord.AppCommandType.chat_input)
+            except Exception:
+                pass
+            try:
+                self.bot.tree.remove_command(name, type=discord.AppCommandType.chat_input, guild=gobj)
+            except Exception:
+                pass
 
-            # --- remove any existing global/guild copies (idempotent) ---
-            for name in ("sponsor", "sponsorlist", "sponsorreport", "sponsorconfig"):
-                try:
-                    self.bot.tree.remove_command(name, type=discord.AppCommandType.chat_input)
-                except Exception:
-                    pass
-                try:
-                    self.bot.tree.remove_command(name, type=discord.AppCommandType.chat_input, guild=gobj)
-                except Exception:
-                    pass
-
-            # --- add guild-scoped commands explicitly ---
+        # 3) Add ONLY the Kometa-guild scoped commands explicitly
+        try:
             group = SponsorConfigGroup(self)
             self.bot.tree.add_command(group, guild=gobj)
+
             self.bot.tree.add_command(self.sponsor_slash, guild=gobj)
             self.bot.tree.add_command(self.sponsorlist_slash, guild=gobj)
             self.bot.tree.add_command(self.sponsorreport_slash, guild=gobj)
+        except Exception as e:
+            mylogger.error("SponsorCheck: add_command failed: %s", e)
 
-            # --- one deterministic guild sync ---
+        # 4) Single deterministic guild sync
+        try:
             synced = await self.bot.tree.sync(guild=gobj)
             mylogger.info(
                 "SponsorCheck: guild sync returned %d commands: %s",
                 len(synced), ", ".join(sorted(c.name for c in synced)),
             )
             mylogger.info("SponsorCheck: synced app commands to Kometa guild %s.", KOMETA_GUILD_ID)
-
         except Exception as e:
-            mylogger.error(f"SponsorCheck slash sync error: {e}")
+            mylogger.error("SponsorCheck: guild sync error: %s", e)
             
 # ---------- Token helpers ----------
     def _load_pat(self, initial: bool = False, force: bool = False) -> None:
