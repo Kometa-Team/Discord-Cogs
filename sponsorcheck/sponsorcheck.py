@@ -1198,7 +1198,7 @@ class SponsorCheck(commands.Cog):
     # Slash commands (top-level)
     # =====================================================================
     @app_commands.guilds(discord.Object(id=KOMETA_GUILD_ID))
-@app_commands.command(name="sponsor", description="Check a user’s GitHub sponsor status.")
+    @app_commands.command(name="sponsor", description="Check a user’s GitHub sponsor status.")
     @app_commands.describe(username="GitHub or Discord name to check")
     async def sponsor_slash(self, interaction: discord.Interaction, username: str):
         self._log_invoke_inter(interaction, "Sponsor")
@@ -1206,14 +1206,14 @@ class SponsorCheck(commands.Cog):
         await self._sponsor_core(ctx, username)
 
     @app_commands.guilds(discord.Object(id=KOMETA_GUILD_ID))
-@app_commands.command(name="sponsorlist", description="List public sponsors (master embed + file).")
+    @app_commands.command(name="sponsorlist", description="List public sponsors (master embed + file).")
     async def sponsorlist_slash(self, interaction: discord.Interaction):
         self._log_invoke_inter(interaction, "Sponsorlist")
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsorlist_core(ctx)
 
     @app_commands.guilds(discord.Object(id=KOMETA_GUILD_ID))
-@app_commands.command(name="sponsorreport",
+    @app_commands.command(name="sponsorreport",
                           description="Reconciliation report (summary + sections; master embed + file).")
     @app_commands.describe(limit="Max lines per section written into the attached text file (default 2000)")
     async def sponsorreport_slash(self, interaction: discord.Interaction, limit: int = 2000):
