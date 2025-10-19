@@ -489,21 +489,32 @@ class SponsorCheck(commands.Cog):
 
     # ---------- Slash sync + store load ----------
     async def cog_load(self) -> None:
-
         await self._load_store()
-        # Register /sponsorconfig to the Kometa guild and sync deterministically
+
+        gobj = discord.Object(id=KOMETA_GUILD_ID)
+
         try:
+            # 1) Add /sponsorconfig group (as before)
             group = SponsorConfigGroup(self)
-            gobj = discord.Object(id=KOMETA_GUILD_ID)
             self.bot.tree.add_command(group, guild=gobj)
-            await self.bot.tree.sync(guild=gobj)
+
+            # 2) EXPLICITLY add the three top-level slash commands to the same guild
+            self.bot.tree.add_command(self.sponsor_slash, guild=gobj)
+            self.bot.tree.add_command(self.sponsorlist_slash, guild=gobj)
+            self.bot.tree.add_command(self.sponsorreport_slash, guild=gobj)
+
+            # 3) Sync the Kometa guild once
             synced = await self.bot.tree.sync(guild=gobj)
-            mylogger.info("SponsorCheck: guild sync returned %d commands: %s",
-                          len(synced), ", ".join(sorted(c.name for c in synced)))
-            mylogger.info(f"SponsorCheck: synced app commands to Kometa guild {KOMETA_GUILD_ID}.")
+            mylogger.info(
+                "SponsorCheck: guild sync returned %d commands: %s",
+                len(synced),
+                ", ".join(sorted(c.name for c in synced)),
+            )
+            mylogger.info("SponsorCheck: synced app commands to Kometa guild %s.", KOMETA_GUILD_ID)
+
         except Exception as e:
             mylogger.error(f"SponsorCheck slash sync error: {e}")
-        
+
 # ---------- Token helpers ----------
     def _load_pat(self, initial: bool = False, force: bool = False) -> None:
         if self._pat and not force:
