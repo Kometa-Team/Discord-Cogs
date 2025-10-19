@@ -494,16 +494,29 @@ class SponsorCheck(commands.Cog):
         gobj = discord.Object(id=KOMETA_GUILD_ID)
 
         try:
-            # 1) Add /sponsorconfig group (as before)
+            # --- Remove any stale global or guild versions to avoid name collisions ---
+            for name in ("sponsor", "sponsorlist", "sponsorreport", "sponsorconfig"):
+                # Remove GLOBAL (no guild) if present
+                try:
+                    self.bot.tree.remove_command(name, type=discord.AppCommandType.chat_input)
+                except Exception:
+                    pass
+                # Remove Kometa-guild scoped if present
+                try:
+                    self.bot.tree.remove_command(name, type=discord.AppCommandType.chat_input, guild=gobj)
+                except Exception:
+                    pass
+
+            # 1) Add /sponsorconfig group (guild-scoped)
             group = SponsorConfigGroup(self)
             self.bot.tree.add_command(group, guild=gobj)
 
-            # 2) EXPLICITLY add the three top-level slash commands to the same guild
+            # 2) Add the three top-level slash commands (guild-scoped)
             self.bot.tree.add_command(self.sponsor_slash, guild=gobj)
             self.bot.tree.add_command(self.sponsorlist_slash, guild=gobj)
             self.bot.tree.add_command(self.sponsorreport_slash, guild=gobj)
 
-            # 3) Sync the Kometa guild once
+            # 3) Single, deterministic guild sync
             synced = await self.bot.tree.sync(guild=gobj)
             mylogger.info(
                 "SponsorCheck: guild sync returned %d commands: %s",
