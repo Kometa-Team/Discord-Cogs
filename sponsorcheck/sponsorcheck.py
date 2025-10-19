@@ -32,7 +32,7 @@ PAT_FILE = "/opt/red-botmoose/secrets/github_pat.txt"
 
 # ---------- Slash registration ----------
 # Put your guild ID(s) here for INSTANT slash availability; leave empty for global (slower).
-INSTANT_SLASH_GUILDS: Set[int] = {822460010649878528}
+KOMETA_GUILD_ID: int = 822460010649878528
 
 # ---------- Easter Egg ----------
 EASTER_EGG_NAMES = {"sohjiro", "meisnate12"}
@@ -489,32 +489,19 @@ class SponsorCheck(commands.Cog):
 
     # ---------- Slash sync + store load ----------
     async def cog_load(self) -> None:
+
         await self._load_store()
-        # Register the /sponsorconfig group
+        # Register /sponsorconfig to the Kometa guild and sync deterministically
         try:
             group = SponsorConfigGroup(self)
-            if INSTANT_SLASH_GUILDS:
-                for gid in INSTANT_SLASH_GUILDS:
-                    self.bot.tree.add_command(group, guild=discord.Object(id=gid))
-            else:
-                self.bot.tree.add_command(group)
-        except Exception as e:
-            mylogger.error(f"Failed to add /sponsorconfig: {e}")
-
-        try:
-            if INSTANT_SLASH_GUILDS:
-                for gid in INSTANT_SLASH_GUILDS:
-                    guild = self.bot.get_guild(gid)
-                    if guild:
-                        await self.bot.tree.sync(guild=guild)
-                        mylogger.info(f"SponsorCheck: synced app commands to guild {gid}.")
-            else:
-                await self.bot.tree.sync()
-                mylogger.info("SponsorCheck: requested global app command sync.")
+            gobj = discord.Object(id=KOMETA_GUILD_ID)
+            self.bot.tree.add_command(group, guild=gobj)
+            await self.bot.tree.sync(guild=gobj)
+            mylogger.info(f"SponsorCheck: synced app commands to Kometa guild {KOMETA_GUILD_ID}.")
         except Exception as e:
             mylogger.error(f"SponsorCheck slash sync error: {e}")
-
-    # ---------- Token helpers ----------
+        
+# ---------- Token helpers ----------
     def _load_pat(self, initial: bool = False, force: bool = False) -> None:
         if self._pat and not force:
             return
@@ -1210,20 +1197,23 @@ class SponsorCheck(commands.Cog):
     # =====================================================================
     # Slash commands (top-level)
     # =====================================================================
-    @app_commands.command(name="sponsor", description="Check a user’s GitHub sponsor status.")
+    @app_commands.guilds(discord.Object(id=KOMETA_GUILD_ID))
+@app_commands.command(name="sponsor", description="Check a user’s GitHub sponsor status.")
     @app_commands.describe(username="GitHub or Discord name to check")
     async def sponsor_slash(self, interaction: discord.Interaction, username: str):
         self._log_invoke_inter(interaction, "Sponsor")
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsor_core(ctx, username)
 
-    @app_commands.command(name="sponsorlist", description="List public sponsors (master embed + file).")
+    @app_commands.guilds(discord.Object(id=KOMETA_GUILD_ID))
+@app_commands.command(name="sponsorlist", description="List public sponsors (master embed + file).")
     async def sponsorlist_slash(self, interaction: discord.Interaction):
         self._log_invoke_inter(interaction, "Sponsorlist")
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsorlist_core(ctx)
 
-    @app_commands.command(name="sponsorreport",
+    @app_commands.guilds(discord.Object(id=KOMETA_GUILD_ID))
+@app_commands.command(name="sponsorreport",
                           description="Reconciliation report (summary + sections; master embed + file).")
     @app_commands.describe(limit="Max lines per section written into the attached text file (default 2000)")
     async def sponsorreport_slash(self, interaction: discord.Interaction, limit: int = 2000):
