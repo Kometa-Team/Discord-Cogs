@@ -488,7 +488,6 @@ class SponsorCheck(commands.Cog):
         await self._save_store()
 
     # ---------- Slash sync + store load ----------
-    # ---------- Slash sync + store load ----------
     async def cog_load(self) -> None:
         # Load mappings store first
         await self._load_store()
@@ -498,9 +497,7 @@ class SponsorCheck(commands.Cog):
     async def _register_commands_after_red(self) -> None:
         # Let Red finish red_check_enabled() (which may re-add disabled globals)
         await asyncio.sleep(0.5)
-
         gobj = discord.Object(id=KOMETA_GUILD_ID)
-
         # 1) Prune Red’s disabled-global cache for our names (prevents re-adding globals)
         try:
             disabled = getattr(self.bot.tree, "_disabled_global_commands", None)
@@ -508,8 +505,7 @@ class SponsorCheck(commands.Cog):
                 for nm in ("sponsor", "sponsorlist", "sponsorreport", "sponsorconfig"):
                     disabled.pop(nm, None)
         except Exception:
-            pass  # best-effort; safe to ignore
-
+            pass
         # 2) Remove any lingering GLOBAL and GUILD copies (idempotent, avoids collisions)
         for name in ("sponsor", "sponsorlist", "sponsorreport", "sponsorconfig"):
             try:
@@ -520,18 +516,15 @@ class SponsorCheck(commands.Cog):
                 self.bot.tree.remove_command(name, type=discord.AppCommandType.chat_input, guild=gobj)
             except Exception:
                 pass
-
         # 3) Add ONLY the Kometa-guild scoped commands explicitly
         try:
             group = SponsorConfigGroup(self)
             self.bot.tree.add_command(group, guild=gobj)
-
             self.bot.tree.add_command(self.sponsor_slash, guild=gobj)
             self.bot.tree.add_command(self.sponsorlist_slash, guild=gobj)
             self.bot.tree.add_command(self.sponsorreport_slash, guild=gobj)
         except Exception as e:
             mylogger.error("SponsorCheck: add_command failed: %s", e)
-
         # 4) Single deterministic guild sync
         try:
             synced = await self.bot.tree.sync(guild=gobj)
@@ -542,8 +535,9 @@ class SponsorCheck(commands.Cog):
             mylogger.info("SponsorCheck: synced app commands to Kometa guild %s.", KOMETA_GUILD_ID)
         except Exception as e:
             mylogger.error("SponsorCheck: guild sync error: %s", e)
-            
-# ---------- Token helpers ----------
+
+    # ---------- Token helpers ----------
+
     def _load_pat(self, initial: bool = False, force: bool = False) -> None:
         if self._pat and not force:
             return
@@ -847,7 +841,14 @@ class SponsorCheck(commands.Cog):
         union = {u.lower() for u in (curr_pub | curr_priv | past_pub | past_priv)}
         return union
 
-    async def _sponsor_core(self, ctx: commands.Context, username: str):
+    async def _sponsor_core(
+        self,
+        ctx: commands.Context,
+        username: str,
+        *,
+        label: Optional[str] = None,
+        member: Optional[discord.Member] = None,
+    ):
         self._log_invoke_ctx(ctx, "Sponsor")
         self._ensure_pat()
         if not self._pat:
@@ -855,10 +856,10 @@ class SponsorCheck(commands.Cog):
 
         gh_map, verified_ids, verified_names = await self._get_maps(ctx.guild)
 
-        target = (username or "").lstrip("@").strip()
+        target = (username or "").lstrip("@").strip()  # used for GH lookups
         if not target:
-            return await ctx.send(embed=self._embed_info("Usage", "Try `/sponsor bullmoose20`.", guild=ctx.guild))
-
+            return await ctx.send(embed=self._embed_info("Usage", "Try `/sponsor @member`.", guild=ctx.guild))
+        display = (label or target)  # what we show in embeds
         # Easter egg
         if target.lower() in EASTER_EGG_NAMES:
             egg = discord.Embed(
@@ -885,13 +886,13 @@ class SponsorCheck(commands.Cog):
         union_private = current_private | past_private
         t = target.lower()
 
-        possible_member = self._best_member_match(ctx.guild, target)
+        possible_member = member or self._best_member_match(ctx.guild, display)
 
         # Direct public
         if t in union_public:
             status = "current" if t in current_public else "past"
             gh_avatar = await self._github_avatar(target)
-            em = self._embed_ok("Sponsor check", f"**{target}** is a **{status}** public sponsor of **{SPONSORABLE}**.",
+            em = self._embed_ok("Sponsor check", f"**{display}** is a **{status}** public sponsor of **{SPONSORABLE}**.",
                                 guild=ctx.guild)
             self._attach_person_avatars(em, possible_member, gh_avatar)
             if possible_member:
@@ -904,7 +905,7 @@ class SponsorCheck(commands.Cog):
         # Direct private
         if t in union_private:
             status = "current" if t in current_private else "past"
-            em = self._embed_warn("Sponsor check", f"**{target}** is a **{status}** sponsor of **{SPONSORABLE}**.",
+            em = self._embed_warn("Sponsor check", f"**{display}** is a **{status}** sponsor of **{SPONSORABLE}**.",
                                   guild=ctx.guild)
             em.add_field(name="Privacy", value="Private", inline=True)
             self._attach_person_avatars(em, possible_member, None)
@@ -964,7 +965,7 @@ class SponsorCheck(commands.Cog):
 
             em = self._embed_warn(
                 "Sponsor check",
-                f"**{target}** is **not on record** as a GitHub sponsor of **{SPONSORABLE}**, "
+                f"**{display}** is **not on record** as a GitHub sponsor of **{SPONSORABLE}**, "
                 f"**but already has** the `{ctx.guild.get_role(SPONSOR_ROLE_ID).name}` role.",
                 guild=ctx.guild,
             )
@@ -985,7 +986,7 @@ class SponsorCheck(commands.Cog):
 
         # Hard not-found
         em = self._embed_err("Sponsor check",
-                             f"**{target}** does not appear as a sponsor of **{SPONSORABLE}** (current or past).",
+                             f"**{display}** does not appear as a sponsor of **{SPONSORABLE}** (current or past).",
                              guild=ctx.guild)
         if possible_member:
             try:
@@ -1247,9 +1248,9 @@ class SponsorCheck(commands.Cog):
         ctx = await commands.Context.from_interaction(interaction)
         # Prefer mapped GitHub login for accuracy; fall back to the member's username/display name.
         gh_map, _, _ = await self._get_maps(ctx.guild)
-        target = gh_map.get(str(member.id)) or (member.name or member.display_name or str(member.id))
-        await self._sponsor_core(ctx, target)
-
+        login_for_lookup = gh_map.get(str(member.id)) or (member.name or member.display_name or str(member.id))
+        label_for_display = member.display_name or member.name or str(member)
+        await self._sponsor_core(ctx, login_for_lookup, label=label_for_display, member=member)
     @app_commands.guilds(discord.Object(id=KOMETA_GUILD_ID))
     @app_commands.command(name="sponsorlist", description="List public sponsors (master embed + file).")
     async def sponsorlist_slash(self, interaction: discord.Interaction):
