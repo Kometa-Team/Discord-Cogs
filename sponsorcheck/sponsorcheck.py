@@ -1451,6 +1451,122 @@ class SponsorConfigGroup(app_commands.Group):
         await interaction.response.send_message("Import complete. (Replaced current mappings.)", ephemeral=True)
 
 
+# ---- Public result for cross-cog use (add this near the bottom of the file) ----
+from dataclasses import dataclass
+from time import monotonic
+
+@dataclass
+class SponsorEval:
+    is_current: bool
+    is_past: bool
+    is_private: bool
+    matched_login: Optional[str]  # may be None for verified/private
+    mapping_used: Optional[str]   # "mapping" | "heuristic" | "verified_private" | None
+    had_role: bool
+    grant_role_msg: Optional[str]
+
+# simple cache to avoid hammering the API when threads are opened in bursts
+self_cache_attr = "_threads_sponsor_cache"
+def _get_cache(self):
+    cache = getattr(self, self_cache_attr, None)
+    if not cache:
+        cache = {"expires": 0.0, "data": None}
+        setattr(self, self_cache_attr, cache)
+    return cache
+
+async def _get_sponsors_cached(self) -> tuple[set[str], set[str], set[str], set[str]]:
+    now = monotonic()
+    cache = _get_cache(self)
+    if cache["data"] and now < cache["expires"]:
+        return cache["data"]  # type: ignore[return-value]
+    curr_pub, curr_priv, past_pub, past_priv = await self._fetch_all_sponsors()
+    data = ({u.lower() for u in curr_pub},
+            {u.lower() for u in curr_priv},
+            {u.lower() for u in past_pub},
+            {u.lower() for u in past_priv})
+    cache["data"] = data
+    cache["expires"] = now + 600.0  # 10 min
+    return data  # type: ignore[return-value]
+
+# ---- Public method for Threads cog ----
+async def check_discord_member(self, guild: discord.Guild, member: discord.Member) -> SponsorEval:
+    """
+    Lightweight, read-only check used by threads.py.
+    - Uses Discord DISPLAY NAME for all user-facing text.
+    - Auto-grants the Sponsor role if the user is a CURRENT sponsor and doesn't have it.
+    - Never posts messages; just returns a structured result.
+    """
+    gh_map, verified_ids, verified_names = await self._get_maps(guild)
+    mapped_login = (gh_map.get(str(member.id)) or "").strip().lower() or None
+
+    curr_pub, curr_priv, past_pub, past_priv = await self._get_sponsors_cached()
+    union_public = curr_pub | past_pub
+    union_private = curr_priv | past_priv
+
+    is_current = False
+    is_past = False
+    is_private = False
+    matched = None
+    mapping_used = None
+
+    # 1) explicit mapping
+    if mapped_login:
+        ml = mapped_login.lower()
+        if ml in union_public:
+            is_current = ml in curr_pub
+            is_past = not is_current
+            matched = ml
+            mapping_used = "mapping"
+        elif ml in union_private:
+            is_current = ml in curr_priv
+            is_past = not is_current
+            is_private = True
+            matched = ml
+            mapping_used = "mapping"
+
+    # 2) verified private fallback → treat as current
+    if not matched and (member.id in verified_ids or (member.name or "").lower() in verified_names):
+        is_current, is_private, matched, mapping_used = True, True, None, "verified_private"
+
+    # 3) heuristic from display/username if still unknown
+    if not matched and not is_current and not is_past:
+        ksn = (member.display_name or "")
+        dsn = (member.name or "")
+        override = gh_map.get(str(member.id))
+        for cand in self._gh_candidates_from_names(ksn, dsn, override):
+            lc = cand.lower()
+            if lc in union_public:
+                is_current = lc in curr_pub
+                is_past = not is_current
+                matched = lc
+                mapping_used = "heuristic"
+                break
+            if lc in union_private:
+                is_current = lc in curr_priv
+                is_past = not is_current
+                is_private = True
+                matched = lc
+                mapping_used = "heuristic"
+                break
+
+    had_role = self._has_sponsor_role(guild, member)
+    grant_role_msg = None
+    if is_current and not had_role:
+        ok, grant_role_msg = await self._try_grant_role(guild, member)
+        mylogger.info("Auto-grant role on thread open: guild=%s member=%s ok=%s msg=%s",
+                      guild.id, member.id, ok, grant_role_msg)
+
+    return SponsorEval(
+        is_current=is_current,
+        is_past=is_past,
+        is_private=is_private,
+        matched_login=matched,
+        mapping_used=mapping_used,
+        had_role=had_role,
+        grant_role_msg=grant_role_msg,
+    )
+
+
 # Red entrypoint
 async def setup(bot):
     await bot.add_cog(SponsorCheck(bot))
