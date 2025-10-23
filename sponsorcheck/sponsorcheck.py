@@ -1323,47 +1323,70 @@ class SponsorConfigGroup(app_commands.Group):
         )
         await interaction.response.send_message(text, ephemeral=True)
 
-    @app_commands.command(name="map_add",
-                          description="Map a Discord user to a GitHub login (must exist in GH sponsors).")
-    @app_commands.describe(member="Discord member (must already have Sponsor role)",
-                           github_login="GitHub username (login), must be in current/past sponsors")
+    @app_commands.command(
+        name="map_add",
+        description="Map a Discord user to a GitHub login (must appear in maintainer’s sponsor lists)."
+    )
+    @app_commands.describe(member="Discord member", github_login="GitHub username (login)")
     async def map_add(self, interaction: discord.Interaction, member: discord.Member, github_login: str):
-        self._log(interaction, "map_add")
-
-        # permissions
+        # Staff-only guard
         mem = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
         if not mem or not _is_staff(mem):
             return await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
 
-        # 1) Require the member already has the Sponsor role
-        role = interaction.guild.get_role(SPONSOR_ROLE_ID)
-        if not role or role not in member.roles:
-            return await interaction.response.send_message(
-                f"❌ **Policy**: The member must already have the **{role.name if role else 'Sponsor'}** role before mapping.\n"
-                f"Grant the role first (e.g., via `/sponsor <user>` or manually), then retry.",
-                ephemeral=True
-            )
-
-        # 2) Verify the GH login exists in union(current/past, public/private)
         gl = github_login.strip().lstrip("@").lower()
+
+        # Require the login to exist in current/past (public or private)
         try:
             union = await self.cog._fetch_union_logins()
         except GitHubAuthError as e:
             return await interaction.response.send_message(f"GitHub API error: {e.detail}", ephemeral=True)
+
         if gl not in union:
             return await interaction.response.send_message(
-                "❌ The GitHub login you provided **is not found** in the maintainer’s **current or past** sponsor lists "
-                "(public or private).\n"
-                "• Double-check the login\n"
-                "• If this user sponsors **outside GitHub**, use **/sponsorconfig private_add** instead.",
-                ephemeral=True
+                "❌ That GitHub login is **not found** in the maintainer’s **current or past** sponsors "
+                "(public or private). Double-check the login, or if they sponsor off-GitHub use "
+                "`/sponsorconfig private_add` instead.",
+                ephemeral=True,
             )
 
-        # 3) Save the mapping
+        # Save the mapping (even if the member doesn't yet have the Sponsor role)
         gh_map, v_ids, v_names = await self.cog._get_maps(interaction.guild)
         gh_map[str(member.id)] = gl
         await self.cog._set_maps(interaction.guild, gh_map=gh_map)
-        await interaction.response.send_message(f"✅ Mapped **{member}** → `{gl}`", ephemeral=True)
+
+        # Immediate ack (ephemeral)
+        await interaction.response.send_message(
+            f"✅ Mapped **{member}** → `{gl}`.\n"
+            "Attempting verification and role sync now…",
+            ephemeral=True,
+        )
+
+        # Try to verify & grant role now (best-effort)
+        try:
+            eval = await self.cog.check_discord_member(interaction.guild, member)
+            # Build a short status line (always display Discord name consistently)
+            if eval and (eval.is_current or eval.is_past):
+                status = "current" if eval.is_current else "past"
+                privacy = " (private)" if eval.is_private else ""
+                extra = f"  _{eval.grant_role_msg}_" if eval.grant_role_msg else ""
+                msg = (
+                    f"🔎 Verification result: **{member.display_name or member.name}** "
+                    f"is **{status}{privacy}** sponsor.{extra}"
+                )
+            else:
+                msg = (
+                    "🔎 Verification result: no active/past sponsor record found yet.\n"
+                    "The mapping was saved; re-run **/sponsor** later or add a private verification with "
+                    "**/sponsorconfig private_add** if appropriate."
+                )
+            await interaction.followup.send(msg, ephemeral=True)
+        except Exception as e:
+            mylogger.exception("map_add auto-verify failed: %s", e)
+            await interaction.followup.send(
+                f"⚠️ Auto-verify failed: `{e}`. You can still run **/sponsor** on the member.",
+                ephemeral=True,
+            )
 
     @app_commands.command(name="map_remove", description="Remove a Discord→GitHub mapping.")
     @app_commands.describe(member="Discord member")
