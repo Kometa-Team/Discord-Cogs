@@ -403,7 +403,7 @@ class SponsorCheck(commands.Cog):
 
     async def _get_sponsors_cached(self) -> tuple[set[str], set[str], set[str], set[str]]:
         now = monotonic()
-        cache = _get_cache(self)
+        cache = self._get_cache()
         if cache["data"] and now < cache["expires"]:
             return cache["data"]  # type: ignore[return-value]
         curr_pub, curr_priv, past_pub, past_priv = await self._fetch_all_sponsors()
