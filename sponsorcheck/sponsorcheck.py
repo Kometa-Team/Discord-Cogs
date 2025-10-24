@@ -842,12 +842,12 @@ class SponsorCheck(commands.Cog):
         return union
 
     async def _sponsor_core(
-        self,
-        ctx: commands.Context,
-        username: str,
-        *,
-        label: Optional[str] = None,
-        member: Optional[discord.Member] = None,
+            self,
+            ctx: commands.Context,
+            username: str,
+            *,
+            label: Optional[str] = None,
+            member: Optional[discord.Member] = None,
     ):
         self._log_invoke_ctx(ctx, "Sponsor")
         self._ensure_pat()
@@ -892,7 +892,8 @@ class SponsorCheck(commands.Cog):
         if t in union_public:
             status = "current" if t in current_public else "past"
             gh_avatar = await self._github_avatar(target)
-            em = self._embed_ok("Sponsor check", f"**{display}** is a **{status}** public sponsor of **{SPONSORABLE}**.",
+            em = self._embed_ok("Sponsor check",
+                                f"**{display}** is a **{status}** public sponsor of **{SPONSORABLE}**.",
                                 guild=ctx.guild)
             self._attach_person_avatars(em, possible_member, gh_avatar)
             if possible_member:
@@ -1251,6 +1252,7 @@ class SponsorCheck(commands.Cog):
         login_for_lookup = gh_map.get(str(member.id)) or (member.name or member.display_name or str(member.id))
         label_for_display = member.display_name or member.name or str(member)
         await self._sponsor_core(ctx, login_for_lookup, label=label_for_display, member=member)
+
     @app_commands.guilds(discord.Object(id=KOMETA_GUILD_ID))
     @app_commands.command(name="sponsorlist", description="List public sponsors (master embed + file).")
     async def sponsorlist_slash(self, interaction: discord.Interaction):
@@ -1478,24 +1480,29 @@ class SponsorConfigGroup(app_commands.Group):
 from dataclasses import dataclass
 from time import monotonic
 
+
 @dataclass
 class SponsorEval:
     is_current: bool
     is_past: bool
     is_private: bool
     matched_login: Optional[str]  # may be None for verified/private
-    mapping_used: Optional[str]   # "mapping" | "heuristic" | "verified_private" | None
+    mapping_used: Optional[str]  # "mapping" | "heuristic" | "verified_private" | None
     had_role: bool
     grant_role_msg: Optional[str]
 
+
 # simple cache to avoid hammering the API when threads are opened in bursts
 self_cache_attr = "_threads_sponsor_cache"
+
+
 def _get_cache(self):
     cache = getattr(self, self_cache_attr, None)
     if not cache:
         cache = {"expires": 0.0, "data": None}
         setattr(self, self_cache_attr, cache)
     return cache
+
 
 async def _get_sponsors_cached(self) -> tuple[set[str], set[str], set[str], set[str]]:
     now = monotonic()
@@ -1510,6 +1517,7 @@ async def _get_sponsors_cached(self) -> tuple[set[str], set[str], set[str], set[
     cache["data"] = data
     cache["expires"] = now + 600.0  # 10 min
     return data  # type: ignore[return-value]
+
 
 # ---- Public method for Threads cog ----
 async def check_discord_member(self, guild: discord.Guild, member: discord.Member) -> SponsorEval:
@@ -1588,6 +1596,14 @@ async def check_discord_member(self, guild: discord.Guild, member: discord.Membe
         had_role=had_role,
         grant_role_msg=grant_role_msg,
     )
+
+
+try:
+    # If check_discord_member is defined at module level, attach it to the class
+    if 'check_discord_member' in globals():
+        SponsorCheck.check_discord_member = check_discord_member  # type: ignore[attr-defined]
+except Exception:
+    pass
 
 
 # Red entrypoint
