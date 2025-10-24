@@ -1590,32 +1590,6 @@ async def check_discord_member(self, guild: discord.Guild, member: discord.Membe
     )
 
 
-
-# ---- Compatibility shim: bind module-level functions to the class (map_add/threads) ----
-try:
-    _mod_globals = globals()
-
-    # bind check_discord_member(self, guild, member)
-    if 'check_discord_member' in _mod_globals and not hasattr(SponsorCheck, 'check_discord_member'):
-        async def _bound_check_discord_member(self, guild, member):
-            return await _mod_globals['check_discord_member'](self, guild, member)
-        SponsorCheck.check_discord_member = _bound_check_discord_member  # type: ignore[attr-defined]
-
-    # bind _get_sponsors_cached(self)
-    if '_get_sponsors_cached' in _mod_globals and not hasattr(SponsorCheck, '_get_sponsors_cached'):
-        async def _bound_get_sponsors_cached(self):
-            return await _mod_globals['_get_sponsors_cached'](self)
-        SponsorCheck._get_sponsors_cached = _bound_get_sponsors_cached  # type: ignore[attr-defined]
-
-    # bind _get_cache(self)
-    if '_get_cache' in _mod_globals and not hasattr(SponsorCheck, '_get_cache'):
-        def _bound_get_cache(self):
-            return _mod_globals['_get_cache'](self)
-        SponsorCheck._get_cache = _bound_get_cache  # type: ignore[attr-defined]
-except Exception as _e:
-    mylogger.exception("SponsorCheck shim bind failed: %s", _e)
-
-
 # Red entrypoint
 async def setup(bot):
     await bot.add_cog(SponsorCheck(bot))
