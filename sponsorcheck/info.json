@@ -3,7 +3,7 @@
   "install_msg": "SponsorCheck (API-only) installed. Configure a PAT via env GITHUB_PAT or /opt/red-botmoose/secrets/github_pat.txt. Commands: [p]sponsor, [p]sponsorlist, [p]sponsorreport. Owner tools: [p]sponsortoken check|reload|where. Replies use embeds; long outputs attach as files.",
   "name": "sponsorcheck",
   "short": "GitHub Sponsors via GraphQL API: check/list + verify against a server role.",
-  "description": "Fetches current & past sponsors (public + private) using GitHub GraphQL with includePrivate:true. Lists public names, counts private, and matches a guild 'Sponsor' role. No HTML scraping. Embed-based replies, avatars, and missing-role warnings.",
+  "description": "Fetches current & past sponsors (public + private) using GitHub GraphQL with includePrivate:true. Lists public names, counts private, and matches a guild 'Sponsor' role. No HTML scraping. Embed-based replies, avatars, and missing-role warnings. Enjoy",
   "requirements": [],
   "permissions": ["Send Messages"],
   "min_bot_version": "3.5.0",
