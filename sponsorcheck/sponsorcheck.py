@@ -1266,6 +1266,7 @@ class SponsorCheck(commands.Cog):
     @app_commands.describe(member="Discord member to check")
     async def sponsor_slash(self, interaction: discord.Interaction, member: discord.Member):
         self._log_invoke_inter(interaction, "Sponsor")
+        await interaction.response.defer(thinking=True)
         ctx = await commands.Context.from_interaction(interaction)
         # Prefer mapped GitHub login for accuracy; fall back to the member's username/display name.
         gh_map, _, _ = await self._get_maps(ctx.guild)
@@ -1276,6 +1277,7 @@ class SponsorCheck(commands.Cog):
     @app_commands.command(name="sponsorlist", description="List public sponsors (master embed + file).")
     async def sponsorlist_slash(self, interaction: discord.Interaction):
         self._log_invoke_inter(interaction, "Sponsorlist")
+        await interaction.response.defer(thinking=True)
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsorlist_core(ctx)
 
@@ -1285,6 +1287,7 @@ class SponsorCheck(commands.Cog):
     @app_commands.describe(limit="Max lines per section written into the attached text file (default 2000)")
     async def sponsorreport_slash(self, interaction: discord.Interaction, limit: int = 2000):
         self._log_invoke_inter(interaction, "Sponsorreport")
+        await interaction.response.defer(thinking=True)
         ctx = await commands.Context.from_interaction(interaction)
         await self._sponsorreport_core(ctx, limit)
 
