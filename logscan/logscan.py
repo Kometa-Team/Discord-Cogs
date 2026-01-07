@@ -523,7 +523,7 @@ class RedBotCogLogscan(commands.Cog):
 
         # Fetch the online content once
         online_content = requests.get(
-            'https://raw.githubusercontent.com/Kometa-Team/People-Images-rainier/master/README.md').text
+            'https://raw.githubusercontent.com/Kometa-Team/People-Images-bw/master/README.md').text
 
         online_names = set()
         for line in online_content.splitlines():
@@ -2379,7 +2379,7 @@ class RedBotCogLogscan(commands.Cog):
         if found_items:
             found_items_text = "\n".join(found_items)
             found_items_text_truncated = truncate_text(found_items_text, 4096)
-            embed.description += f"✅ **Found People** ✅\n\nThese are people found in the attached log that we have a pre-made poster for. If you do not see posters for these people, we recommend you delete the collection and re-run Kometa:\n\n{found_items_text_truncated}\n\n Feel free to review all of the people posters we have here: https://github.com/kometa-team/Kometa-People-rainier/blob/master/README.md\n\n"
+            embed.description += f"✅ **Found People** ✅\n\nThese are people found in the attached log that we have a pre-made poster for. If you do not see posters for these people, we recommend you delete the collection and re-run Kometa:\n\n{found_items_text_truncated}\n\n Feel free to review all of the people posters we have here: https://github.com/kometa-team/Kometa-People-bw/blob/master/README.md\n\n"
 
         if not_found_names:
             not_found_names_text = "\n".join(not_found_names)
