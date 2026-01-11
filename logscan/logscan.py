@@ -1559,7 +1559,7 @@ class RedBotCogLogscan(commands.Cog):
             traceback_errors_message = (
                 "💥 **TRACEBACK ERROR**\n"
                 "Your KOMETA run contains traceback errors.\n"
-                "This likely means that the run ended or did not complete certain tasks'.\n"
+                "This likely means that the run ended prematurely or did not complete certain tasks (i.e. overlays ended early or did not apply).\n"
                 "In the Kometa discord thread, type `!wiki` for more information and search.\n"
                 f"{len(traceback_errors)} line(s) with Traceback errors. Line number(s): {formatted_errors}"
             )
