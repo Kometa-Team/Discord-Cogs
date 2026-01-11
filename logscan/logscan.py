@@ -719,6 +719,7 @@ class RedBotCogLogscan(commands.Cog):
         ruamel_errors = []
         run_order_errors = []
         security_vuln_hits = []
+        traceback_errors = []
         tautulli_url_errors = []
         tautulli_apikey_errors = []
         timeout_errors = []
@@ -766,7 +767,7 @@ class RedBotCogLogscan(commands.Cog):
                 if _version_in_inclusive_range(ver, _PMS_VULN_LOW, _PMS_VULN_HIGH):
                     security_vuln_hits.append((sn, ver, idx))
 
-            if "Config Error: anidb sub-attribute" in line:
+            if "Config Error: anidb sub-attribute" in line or "AniDB Error: Login failed" in line:
                 anidb_auth_errors.append(idx)
             elif "apikey is blank" in line:
                 api_blank_errors.append(idx)
@@ -850,6 +851,8 @@ class RedBotCogLogscan(commands.Cog):
                 ruamel_errors.append(idx)
             elif "TMDb Error: Invalid API key" in line:
                 tmdb_api_errors.append(idx)
+            elif "Traceback (most recent call last):" in line:
+                traceback_errors.append(idx)
             elif "Tautulli Error: Invalid apikey" in line:
                 tautulli_apikey_errors.append(idx)
             elif "Tautulli Error: Invalid URL" in line:
@@ -1549,6 +1552,18 @@ class RedBotCogLogscan(commands.Cog):
                 msg += f"- Server: {sn}, Version: `{ver}`, Line: {ln}\n"
 
             special_check_lines.append(msg)
+
+        if traceback_errors:
+            url_line = "[https://kometa.wiki/en/latest/config/tautulli]"
+            formatted_errors = self.format_contiguous_lines(traceback_errors)
+            traceback_errors_message = (
+                "💥 **TRACEBACK ERROR**\n"
+                "Your KOMETA run contains traceback errors.\n"
+                "This likely means that the run ended or did not complete certain tasks'.\n"
+                "In the Kometa discord thread, type `!wiki` for more information and search.\n"
+                f"{len(traceback_errors)} line(s) with Traceback errors. Line number(s): {formatted_errors}"
+            )
+            special_check_lines.append(traceback_errors_message)
 
         if tautulli_apikey_errors:
             url_line = "[https://kometa.wiki/en/latest/config/tautulli]"
