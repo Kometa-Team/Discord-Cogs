@@ -643,6 +643,22 @@ class RedBotCogLogscan(commands.Cog):
         else:
             return None
 
+    def extract_quickstart_run_marker(self, content):
+        marker_pattern = re.compile(r'Quickstart run marker:\s*(.*)', re.IGNORECASE)
+        marker_text = None
+
+        for match in marker_pattern.finditer(content):
+            marker_text = match.group(1).strip()
+
+        if not marker_text:
+            return None
+
+        pairs = re.findall(r'(\w+)=([^\s|]+)', marker_text)
+        if not pairs:
+            return {"raw": marker_text}
+
+        return {key: value for key, value in pairs}
+
     def format_contiguous_lines(self, line_numbers):
         formatted_ranges = []
         start_range = line_numbers[0]
@@ -2190,6 +2206,36 @@ class RedBotCogLogscan(commands.Cog):
 
         return kometa_info_embed, incomplete_message
 
+    def create_quickstart_run_embed(self, quickstart_marker, message):
+        if not quickstart_marker:
+            return None
+
+        server_icon_url = None
+        if hasattr(message, "guild") and message.guild:
+            server_icon_url = message.guild.icon.url
+
+        quickstart_embed = discord.Embed(title="**Quickstart Run Marker**", color=discord.Color.green())
+
+        if server_icon_url:
+            quickstart_embed.set_thumbnail(url=server_icon_url)
+
+        started_value = quickstart_marker.get("started")
+        config_value = quickstart_marker.get("config")
+        quickstart_value = quickstart_marker.get("quickstart")
+        branch_value = quickstart_marker.get("branch")
+
+        if not any([started_value, config_value, quickstart_value, branch_value]):
+            raw_value = quickstart_marker.get("raw", "N/A")
+            quickstart_embed.description = f"Quickstart run marker detected, but could not parse fields:\n`{raw_value}`"
+            return quickstart_embed
+
+        quickstart_embed.add_field(name="Started", value=started_value or "N/A", inline=False)
+        quickstart_embed.add_field(name="Config", value=config_value or "N/A", inline=True)
+        quickstart_embed.add_field(name="Quickstart", value=quickstart_value or "N/A", inline=True)
+        quickstart_embed.add_field(name="Branch", value=branch_value or "N/A", inline=True)
+
+        return quickstart_embed
+
     def create_kometa_config_schema_embed(self, schema_message, message, incomplete_message):
         # Initialize server_icon_url to None
         server_icon_url = None
@@ -2654,6 +2700,7 @@ class RedBotCogLogscan(commands.Cog):
         header_lines = self.extract_header_lines(parsed_content)
         finished_lines = self.extract_last_lines(parsed_content)
         summary_lines = self.extract_finished_runs(parsed_content)
+        quickstart_marker = self.extract_quickstart_run_marker(parsed_content)
         plex_config_sections = self.extract_plex_config(parsed_content)
         parsed_yaml, yaml_message, config_content = self.extract_config(parsed_content)
         parsed_yaml, schema_message, config_content = self.extract_config_schema(parsed_content)
@@ -2675,6 +2722,9 @@ class RedBotCogLogscan(commands.Cog):
         # Call the create_kometa_info_embed method
         kometa_info_embed, incomplete_message = self.create_kometa_info_embed(header_lines, finished_lines, ctx,
                                                                               attachment)
+
+        # Call the create_quickstart_run_embed method
+        quickstart_run_embed = self.create_quickstart_run_embed(quickstart_marker, ctx)
 
         # Call the create_summary_info_embed method
         summary_info_embed = self.create_summary_info_embed(summary_lines, ctx)
@@ -2759,6 +2809,9 @@ class RedBotCogLogscan(commands.Cog):
 
         if kometa_info_embed:
             pages.append({"content": "", "embed": kometa_info_embed})
+
+        if quickstart_run_embed:
+            pages.append({"content": "", "embed": quickstart_run_embed})
 
         if summary_info_embed:
             pages.append({"content": "", "embed": summary_info_embed})
