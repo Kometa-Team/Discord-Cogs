@@ -2210,9 +2210,7 @@ class RedBotCogLogscan(commands.Cog):
         if not quickstart_marker:
             return None
 
-        server_icon_url = None
-        if hasattr(message, "guild") and message.guild:
-            server_icon_url = message.guild.icon.url
+        server_icon_url = "https://raw.githubusercontent.com/Kometa-Team/Quickstart/refs/heads/master/static/images/logo.webp"
 
         quickstart_embed = discord.Embed(title="**Quickstart Run Marker**", color=discord.Color.green())
 
