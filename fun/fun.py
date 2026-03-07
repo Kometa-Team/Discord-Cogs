@@ -70,11 +70,11 @@ class RedBotCogFun(commands.Cog):
 
         # Check if the message matches any trigger based on the specified matching type
         for trigger, match_type in self.reaction_triggers.items():
-            if match_type == 'exact' and content_lower == trigger:
-                await self.react_with_image(message, trigger)
-            elif match_type == 'startswith' and content_lower.startswith(trigger):
-                await self.react_with_image(message, trigger)
-            elif match_type == 'contains' and trigger in content_lower:
+            if (
+                (match_type == 'exact' and content_lower == trigger)
+                or (match_type == 'startswith' and content_lower.startswith(trigger))
+                or (match_type == 'contains' and trigger in content_lower)
+            ):
                 await self.react_with_image(message, trigger)
 
     async def react_with_image(self, message, reaction_trigger):
