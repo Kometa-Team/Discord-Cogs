@@ -16,6 +16,7 @@ import random
 import jsonschema
 import json
 import logging
+import shutil
 
 from urllib.parse import unquote
 from datetime import datetime, timedelta
@@ -31,7 +32,8 @@ mylogger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
 SUPPORTED_FILE_EXTENSIONS = ('.txt', '.log', '.yml', '.1', '.2', '.3', '.4', '.5', '.6', '.7', '.8', '.9')
 SUPPORTED_COMPRESSED_FORMATS = ['.zip', '.tar', '.tar.gz', '.gz', '.rar', '.7z']
 MAX_ARCHIVE_RECURSION_DEPTH = 3
-MAX_ARCHIVE_ENTRY_BYTES = 100 * 1024 * 1024
+MAX_ARCHIVE_ENTRY_BYTES = 500 * 1024 * 1024
+RAR_BACKEND_MISSING_MESSAGE = "RAR backend not found (install UnRAR or 7-Zip, or add it to PATH)"
 ALLOWED_ROLES = ["Support", "Moderator"]
 # 929756550380286153 Moderator
 # 938443185347244033 Support
@@ -59,6 +61,8 @@ ALLOWED_TEST = 1141467136158613544
 ALLOWED_CHAT = 1138466667165405244
 
 global_divider = "="
+_RAR_BACKEND_CHECKED = False
+_RAR_BACKEND_PATH = None
 
 
 # --- PMS security vulnerability helpers (non-invasive; keep existing checks as-is) ---
@@ -112,7 +116,7 @@ def detect_archive_type(filename):
 
 def has_supported_file_extension(filename):
     lowered = filename.lower()
-    return any(lowered.endswith(ext) for ext in SUPPORTED_FILE_EXTENSIONS)
+    return any(lowered.endswith(ext) for ext in SUPPORTED_FILE_EXTENSIONS) or bool(re.search(r"\.\d+$", lowered))
 
 
 def decode_bytes_with_fallback(content_bytes):
@@ -121,6 +125,54 @@ def decode_bytes_with_fallback(content_bytes):
     except UnicodeDecodeError as e:
         mylogger.error(f"UnicodeDecodeError: {e}")
         return content_bytes.decode("utf-8", errors="replace")
+
+
+def resolve_tool_path(candidate):
+    if os.path.isabs(candidate):
+        return candidate if os.path.exists(candidate) else None
+    return shutil.which(candidate)
+
+
+def ensure_rar_backend():
+    global _RAR_BACKEND_CHECKED, _RAR_BACKEND_PATH
+    if _RAR_BACKEND_CHECKED:
+        return _RAR_BACKEND_PATH
+
+    _RAR_BACKEND_CHECKED = True
+    if rarfile is None:
+        return None
+
+    try:
+        rarfile.tool_setup(force=True)
+        _RAR_BACKEND_PATH = "PATH"
+        return _RAR_BACKEND_PATH
+    except Exception:
+        pass
+
+    tool_candidates = [
+        ("UNRAR_TOOL", ["unrar", r"C:\Program Files\WinRAR\UnRAR.exe", r"C:\Program Files (x86)\WinRAR\UnRAR.exe"]),
+        ("SEVENZIP_TOOL", ["7z", r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"]),
+        ("SEVENZIP2_TOOL", ["7zz"]),
+        ("BSDTAR_TOOL", ["bsdtar", r"C:\Windows\System32\bsdtar.exe"]),
+        ("UNAR_TOOL", ["unar"]),
+    ]
+    seen_paths = set()
+
+    for attr_name, candidates in tool_candidates:
+        for candidate in candidates:
+            resolved = resolve_tool_path(candidate)
+            if not resolved or resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            setattr(rarfile, attr_name, resolved)
+            try:
+                rarfile.tool_setup(force=True)
+                _RAR_BACKEND_PATH = resolved
+                return _RAR_BACKEND_PATH
+            except Exception:
+                continue
+
+    return None
 
 
 class MyMenu(SimpleMenu):
@@ -2677,6 +2729,13 @@ class RedBotCogLogscan(commands.Cog):
                         handle_member(extracted_name, content_bytes)
 
             elif extension == '.rar':
+                if rarfile is None:
+                    self._log_archive_skip(display_name, "rarfile is unavailable")
+                    return extracted_files
+                if ensure_rar_backend() is None:
+                    self._log_archive_skip(display_name, RAR_BACKEND_MISSING_MESSAGE)
+                    return extracted_files
+
                 rar_source = archive_source
                 temp_path = None
                 try:
