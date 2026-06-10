@@ -30,6 +30,8 @@ mylogger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
 # Define constants
 SUPPORTED_FILE_EXTENSIONS = ('.txt', '.log', '.yml', '.1', '.2', '.3', '.4', '.5', '.6', '.7', '.8', '.9')
 SUPPORTED_COMPRESSED_FORMATS = ['.zip', '.tar', '.tar.gz', '.gz', '.rar', '.7z']
+MAX_ARCHIVE_RECURSION_DEPTH = 3
+MAX_ARCHIVE_ENTRY_BYTES = 100 * 1024 * 1024
 ALLOWED_ROLES = ["Support", "Moderator"]
 # 929756550380286153 Moderator
 # 938443185347244033 Support
@@ -96,6 +98,29 @@ def initialize_variables():
     specific_user_id = (796565792492617728 if script_env == "test" else 796565792492617728)
     sohjiro_id = (796565792492617728 if script_env == "test" else 206797306173849600)
     support_role_id = 55559384431853472440335555
+
+
+def detect_archive_type(filename):
+    lowered = filename.lower()
+    if lowered.endswith('.tar.gz'):
+        return '.tar.gz'
+    for ext in SUPPORTED_COMPRESSED_FORMATS:
+        if lowered.endswith(ext):
+            return ext
+    return None
+
+
+def has_supported_file_extension(filename):
+    lowered = filename.lower()
+    return any(lowered.endswith(ext) for ext in SUPPORTED_FILE_EXTENSIONS)
+
+
+def decode_bytes_with_fallback(content_bytes):
+    try:
+        return content_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
+        mylogger.error(f"UnicodeDecodeError: {e}")
+        return content_bytes.decode("utf-8", errors="replace")
 
 
 class MyMenu(SimpleMenu):
@@ -1843,7 +1868,7 @@ class RedBotCogLogscan(commands.Cog):
         """, re.VERBOSE)
 
         current_file = None
-        MAX_CAPTURE_LINES = 2000
+        MAX_CAPTURE_LINES = 10000
 
         for lineno, line in enumerate(raw_content.splitlines(), start=1):
             if not extraction_started:
@@ -2547,8 +2572,168 @@ class RedBotCogLogscan(commands.Cog):
         except Exception as e:
             mylogger.error(f"Error while cleaning up temp dir: {str(e)}")
 
+    def _log_archive_skip(self, display_name, reason):
+        mylogger.warning(f"Skipping {display_name}: {reason}")
+
+    def _read_limited_archive_bytes(self, reader, display_name, size_hint=None):
+        if size_hint is not None and size_hint > MAX_ARCHIVE_ENTRY_BYTES:
+            self._log_archive_skip(display_name, f"entry exceeds {MAX_ARCHIVE_ENTRY_BYTES} bytes")
+            return None
+
+        content_bytes = reader.read(MAX_ARCHIVE_ENTRY_BYTES + 1)
+        if len(content_bytes) > MAX_ARCHIVE_ENTRY_BYTES:
+            self._log_archive_skip(display_name, f"entry exceeds {MAX_ARCHIVE_ENTRY_BYTES} bytes")
+            return None
+        return content_bytes
+
+    def _extract_archive_entries(self, archive_source, display_name, archive_name, depth=1):
+        if depth > MAX_ARCHIVE_RECURSION_DEPTH:
+            self._log_archive_skip(display_name, f"nested archive depth exceeds {MAX_ARCHIVE_RECURSION_DEPTH}")
+            return []
+
+        extension = detect_archive_type(archive_name)
+        if extension not in SUPPORTED_COMPRESSED_FORMATS:
+            return []
+
+        extracted_files = []
+
+        def handle_member(member_name, content_bytes):
+            base_name = os.path.basename(member_name.rstrip("/\\"))
+            if not base_name:
+                return
+
+            nested_display_name = f"{display_name}::{member_name}"
+            nested_extension = detect_archive_type(base_name)
+            if nested_extension in SUPPORTED_COMPRESSED_FORMATS:
+                extracted_files.extend(
+                    self._extract_archive_entries(content_bytes, nested_display_name, base_name, depth + 1)
+                )
+                return
+
+            if not has_supported_file_extension(base_name):
+                return
+
+            content = decode_bytes_with_fallback(content_bytes)
+            extracted_files.append((nested_display_name, content, content_bytes))
+
+        try:
+            if extension == '.zip':
+                zip_source = archive_source if isinstance(archive_source, str) else io.BytesIO(archive_source)
+                with zipfile.ZipFile(zip_source, 'r') as zip_ref:
+                    for file_info in zip_ref.infolist():
+                        if '__MACOSX' in file_info.filename or file_info.is_dir():
+                            continue
+                        nested_display_name = f"{display_name}::{file_info.filename}"
+                        try:
+                            with zip_ref.open(file_info) as file:
+                                content_bytes = self._read_limited_archive_bytes(
+                                    file,
+                                    nested_display_name,
+                                    file_info.file_size,
+                                )
+                            if content_bytes is None:
+                                continue
+                            handle_member(file_info.filename, content_bytes)
+                        except Exception as e:
+                            mylogger.error(f"Error reading zip entry {nested_display_name}: {str(e)}")
+
+            elif extension in ('.tar', '.tar.gz'):
+                if isinstance(archive_source, str):
+                    tar_ctx = tarfile.open(archive_source, 'r:*')
+                else:
+                    tar_ctx = tarfile.open(fileobj=io.BytesIO(archive_source), mode='r:*')
+                with tar_ctx as tar_ref:
+                    for file_info in tar_ref.getmembers():
+                        if '__MACOSX' in file_info.name or not file_info.isfile():
+                            continue
+                        nested_display_name = f"{display_name}::{file_info.name}"
+                        try:
+                            extracted = tar_ref.extractfile(file_info)
+                            if extracted is None:
+                                continue
+                            with extracted:
+                                content_bytes = self._read_limited_archive_bytes(
+                                    extracted,
+                                    nested_display_name,
+                                    file_info.size,
+                                )
+                            if content_bytes is None:
+                                continue
+                            handle_member(file_info.name, content_bytes)
+                        except Exception as e:
+                            mylogger.error(f"Error reading tar entry {nested_display_name}: {str(e)}")
+
+            elif extension == '.gz':
+                if isinstance(archive_source, str):
+                    with gzip.open(archive_source, 'rb') as gz_ref:
+                        content_bytes = self._read_limited_archive_bytes(gz_ref, display_name)
+                else:
+                    with gzip.GzipFile(fileobj=io.BytesIO(archive_source), mode='rb') as gz_ref:
+                        content_bytes = self._read_limited_archive_bytes(gz_ref, display_name)
+
+                if content_bytes is not None:
+                    extracted_name = archive_name[:-3] if archive_name.lower().endswith('.gz') else archive_name
+                    if extracted_name:
+                        handle_member(extracted_name, content_bytes)
+
+            elif extension == '.rar':
+                rar_source = archive_source
+                temp_path = None
+                try:
+                    if not isinstance(archive_source, str):
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.rar') as temp_file:
+                            temp_file.write(archive_source)
+                            temp_path = temp_file.name
+                        rar_source = temp_path
+
+                    with rarfile.RarFile(rar_source) as rar_ref:
+                        for file_info in rar_ref.infolist():
+                            if '__MACOSX' in file_info.filename or file_info.isdir():
+                                continue
+                            nested_display_name = f"{display_name}::{file_info.filename}"
+                            try:
+                                with rar_ref.open(file_info) as file:
+                                    content_bytes = self._read_limited_archive_bytes(
+                                        file,
+                                        nested_display_name,
+                                        file_info.file_size,
+                                    )
+                                if content_bytes is None:
+                                    continue
+                                handle_member(file_info.filename, content_bytes)
+                            except Exception as e:
+                                mylogger.error(f"Error reading rar entry {nested_display_name}: {str(e)}")
+                finally:
+                    if temp_path and os.path.exists(temp_path):
+                        os.remove(temp_path)
+
+            elif extension == '.7z':
+                seven_zip_source = archive_source if isinstance(archive_source, str) else io.BytesIO(archive_source)
+                with py7zr.SevenZipFile(seven_zip_source, 'r') as seven_zip_ref:
+                    extracted_map = seven_zip_ref.readall()
+                    for file_info, file_obj in extracted_map.items():
+                        if '__MACOSX' in file_info or file_info.endswith('/'):
+                            continue
+                        nested_display_name = f"{display_name}::{file_info}"
+                        try:
+                            buffer = file_obj.getbuffer()
+                            size_bytes = len(buffer)
+                            if size_bytes > MAX_ARCHIVE_ENTRY_BYTES:
+                                self._log_archive_skip(
+                                    nested_display_name,
+                                    f"entry exceeds {MAX_ARCHIVE_ENTRY_BYTES} bytes",
+                                )
+                                continue
+                            handle_member(file_info, bytes(buffer))
+                        except Exception as e:
+                            mylogger.error(f"Error reading 7z entry {nested_display_name}: {str(e)}")
+        except Exception as e:
+            mylogger.error(f"Error while extracting archive {display_name}: {str(e)}")
+
+        return extracted_files
+
     async def handle_compressed_file(self, ctx, attachment):
-        filename, extension = os.path.splitext(attachment.filename.lower())
+        extension = detect_archive_type(attachment.filename)
         message_id = ctx.message.id
 
         extracted_files = []
@@ -2561,70 +2746,11 @@ class RedBotCogLogscan(commands.Cog):
 
             try:
                 await attachment.save(compressed_path)
-
-                if extension == '.zip':
-                    with zipfile.ZipFile(compressed_path, 'r') as zip_ref:
-                        for file_info in zip_ref.infolist():
-                            if '__MACOSX' in file_info.filename:
-                                continue  # Ignore entries under __MACOSX folder
-                            with zip_ref.open(file_info) as file:
-                                content_bytes = file.read()
-                                try:
-                                    content = content_bytes.decode("utf-8")
-                                except UnicodeDecodeError as e:
-                                    mylogger.error(f"UnicodeDecodeError: {e}")
-                                    content = content_bytes.decode("utf-8", errors="replace")
-
-                                extracted_files.append((file_info.filename, content, content_bytes))
-
-                elif extension == '.tar':
-                    with tarfile.open(compressed_path, 'r') as tar_ref:
-                        for file_info in tar_ref.getmembers():
-                            if '__MACOSX' in file_info.name:
-                                continue  # Ignore entries under __MACOSX folder
-                            if file_info.isfile():
-                                with tar_ref.extractfile(file_info) as file:
-                                    content_bytes = file.read()
-                                    try:
-                                        content = content_bytes.decode("utf-8")
-                                    except UnicodeDecodeError as e:
-                                        mylogger.error(f"UnicodeDecodeError: {e}")
-                                        content = content_bytes.decode("utf-8", errors="replace")
-
-                                    extracted_files.append((file_info.name, content, content_bytes))
-
-                elif extension == '.gz':
-                    with gzip.open(compressed_path, 'rt', encoding='utf-8') as gz_ref:
-                        content = gz_ref.read()
-                        extracted_files.append((attachment.filename, content, content.encode("utf-8")))
-
-                elif extension == '.rar':
-                    with rarfile.RarFile(compressed_path) as rar_ref:
-                        for file_info in rar_ref.infolist():
-                            if '__MACOSX' in file_info.filename:
-                                continue  # Ignore entries under __MACOSX folder
-                            content_bytes = rar_ref.read(file_info)
-                            try:
-                                content = content_bytes.decode("utf-8")
-                            except UnicodeDecodeError as e:
-                                mylogger.info(f"UnicodeDecodeError: {e}")
-                                content = content_bytes.decode("utf-8", errors="replace")
-
-                            extracted_files.append((file_info.filename, content, content_bytes))
-
-                elif extension == '.7z':
-                    with py7zr.SevenZipFile(compressed_path, 'r') as seven_zip_ref:
-                        for file_info in seven_zip_ref.getnames():
-                            if '__MACOSX' in file_info:
-                                continue  # Ignore entries under __MACOSX folder
-                            content_bytes = seven_zip_ref.read(file_info)
-                            try:
-                                content = content_bytes.decode("utf-8")
-                            except UnicodeDecodeError as e:
-                                mylogger.error(f"UnicodeDecodeError: {e}")
-                                content = content_bytes.decode("utf-8", errors="replace")
-
-                            extracted_files.append((file_info, content, content_bytes))
+                extracted_files = self._extract_archive_entries(
+                    compressed_path,
+                    attachment.filename,
+                    attachment.filename,
+                )
 
             finally:
                 self.cleanup_temp_dir(temp_dir)
@@ -2970,7 +3096,7 @@ class RedBotCogLogscan(commands.Cog):
                 try:
                     linked_message = message_link
                     attachment = linked_message.attachments[0]
-                    filename, extension = os.path.splitext(attachment.filename.lower())
+                    extension = detect_archive_type(attachment.filename)
 
                     if extension in SUPPORTED_COMPRESSED_FORMATS:
                         mylogger.info(
@@ -2981,7 +3107,7 @@ class RedBotCogLogscan(commands.Cog):
                         for extracted_file in extracted_files:
                             file_name, content, content_bytes = extracted_file
                             # Check if the extracted file has a supported extension
-                            if any(file_name.lower().endswith(ext) for ext in SUPPORTED_FILE_EXTENSIONS):
+                            if has_supported_file_extension(file_name):
                                 if ("[kometa.py:" in content.lower() or "[plex_meta_manager.py:" in content.lower()) and not bad_channel:
                                     mylogger.info(
                                         f"SLASH-kometa.py/plex_meta_manager.py: detected in content. Sending to prompt_user_and_get_decision")
@@ -3128,7 +3254,7 @@ class RedBotCogLogscan(commands.Cog):
 
         if message.attachments:
             for attachment in message.attachments:
-                filename, extension = os.path.splitext(attachment.filename.lower())
+                extension = detect_archive_type(attachment.filename)
 
                 if extension in SUPPORTED_COMPRESSED_FORMATS:
                     mylogger.info(f"Compressed file detected. Sending {attachment.filename} to handle_compressed_file")
@@ -3138,7 +3264,7 @@ class RedBotCogLogscan(commands.Cog):
                     for extracted_file in extracted_files:
                         file_name, content, content_bytes = extracted_file
                         # Check if the extracted file has a supported extension
-                        if any(file_name.lower().endswith(ext) for ext in SUPPORTED_FILE_EXTENSIONS):
+                        if has_supported_file_extension(file_name):
                             if ("[kometa.py:" in content.lower() or "[plex_meta_manager.py:" in content.lower()) and not bad_channel:
                                 mylogger.info(
                                     f"kometa.py/plex_meta_manager.py: detected in content. Sending to prompt_user_and_get_decision")
@@ -3158,7 +3284,7 @@ class RedBotCogLogscan(commands.Cog):
                         else:
                             mylogger.info(
                                 f"💥File {file_name} extracted from the compressed file {attachment.filename} is not a supported format.💥")
-                elif extension in SUPPORTED_FILE_EXTENSIONS:
+                elif has_supported_file_extension(attachment.filename):
                     mylogger.info(f"Valid extension detected for {attachment.filename}.")
                     content_bytes = await attachment.read()
                     try:
