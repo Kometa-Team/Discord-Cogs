@@ -691,6 +691,23 @@ class RedBotCogLogscan(commands.Cog):
 
         return finished_runs
 
+    def parse_run_time_value(self, run_time_str):
+        cleaned_run_time = run_time_str.strip().strip("|").strip()
+        run_time_match = re.fullmatch(
+            r"(?:(?P<days>\d+)\s+day(?:s)?,?\s+)?(?P<hours>\d+):(?P<minutes>\d{1,2}):(?P<seconds>\d{1,2})",
+            cleaned_run_time,
+        )
+        if not run_time_match:
+            mylogger.warning("Unable to parse run_time_str: %s", run_time_str)
+            return None
+
+        return timedelta(
+            days=int(run_time_match.group("days") or 0),
+            hours=int(run_time_match.group("hours")),
+            minutes=int(run_time_match.group("minutes")),
+            seconds=int(run_time_match.group("seconds")),
+        )
+
     def extract_last_lines(self, content):
         lines = content.splitlines()
 
@@ -709,10 +726,9 @@ class RedBotCogLogscan(commands.Cog):
                 # Extract the run time value
                 run_time_str = run_time_line.split("Run Time: ")[1].strip()
                 mylogger.info(f"run_time_str: {run_time_str}")
-                self.run_time = timedelta(hours=int(run_time_str.split(":")[0]),
-                                          minutes=int(run_time_str.split(":")[1]),
-                                          seconds=int(run_time_str.split(":")[2]))
-                mylogger.info(f"self.run_time: {self.run_time}")
+                self.run_time = self.parse_run_time_value(run_time_str)
+                if self.run_time is not None:
+                    mylogger.info(f"self.run_time: {self.run_time}")
                 return "\n".join(extracted_lines)
             else:
                 # If "Run Time: " is not found, return None for run time
