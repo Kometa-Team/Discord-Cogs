@@ -3148,6 +3148,9 @@ class RedBotCogLogscan(commands.Cog):
     @commands.hybrid_command(name="logscan")
     @app_commands.describe(message_link="The discord message link you want to scan.")
     async def kometa_logscan(self, ctx: commands.Context, message_link: commands.MessageConverter):
+        if ctx.interaction and not ctx.interaction.response.is_done():
+            await ctx.interaction.response.defer(thinking=True)
+
         # Check if the message is from a DM (Direct Message)
         if not ctx.guild:
             # Message is from a DM or outside a guild
