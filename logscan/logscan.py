@@ -737,20 +737,19 @@ class RedBotCogLogscan(commands.Cog):
         )
 
         marker_text = None
-
         lines = content.splitlines()
+
         i = 0
         while i < len(lines):
             line = lines[i]
-
             config_match = config_debug_re.search(line)
             message = config_match.group(1).strip() if config_match else line.strip()
 
             marker_match = config_marker_re.search(message)
             if marker_match:
-                marker_text = marker_match.group(1).strip()
-
+                parts = [marker_match.group(1).strip()]
                 j = i + 1
+
                 while j < len(lines):
                     next_line = lines[j]
                     next_config_match = config_debug_re.search(next_line)
@@ -759,18 +758,15 @@ class RedBotCogLogscan(commands.Cog):
 
                     next_message = next_config_match.group(1).strip()
 
-                    if not next_message:
-                        break
-                    if next_message.startswith("#"):
-                        break
-                    if "[Quickstart]" in next_message:
+                    if not next_message or "[Quickstart]" in next_message or next_message.startswith("#"):
                         break
                     if "=" not in next_message:
                         break
 
-                    marker_text += " " + next_message
+                    parts.append(next_message)
                     j += 1
 
+                marker_text = " ".join(parts)
                 i = j
                 continue
 
@@ -787,7 +783,73 @@ class RedBotCogLogscan(commands.Cog):
         if not pairs:
             return {"raw": marker_text}
 
-        return {key: value for key, value in pairs}
+        return {key: value for key, value in pairs}        import re
+
+            config_marker_re = re.compile(
+                r'(?:#\s*)?(?:\[Quickstart\]\s+Run marker:|Quickstart run marker:)\s*(.*)',
+                re.IGNORECASE,
+            )
+            runtime_marker_re = re.compile(
+                r'\[Quickstart\]\s+Run marker:\s*(.*)',
+                re.IGNORECASE,
+            )
+            config_debug_re = re.compile(
+                r'\[config\.py:\d+\].*?\|\s*(.*?)(?:\s*\|)?\s*$',
+                re.IGNORECASE,
+            )
+
+            marker_text = None
+
+            lines = content.splitlines()
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+
+                config_match = config_debug_re.search(line)
+                message = config_match.group(1).strip() if config_match else line.strip()
+
+                marker_match = config_marker_re.search(message)
+                if marker_match:
+                    marker_text = marker_match.group(1).strip()
+
+                    j = i + 1
+                    while j < len(lines):
+                        next_line = lines[j]
+                        next_config_match = config_debug_re.search(next_line)
+                        if not next_config_match:
+                            break
+
+                        next_message = next_config_match.group(1).strip()
+
+                        if not next_message:
+                            break
+                        if next_message.startswith("#"):
+                            break
+                        if "[Quickstart]" in next_message:
+                            break
+                        if "=" not in next_message:
+                            break
+
+                        marker_text += " " + next_message
+                        j += 1
+
+                    i = j
+                    continue
+
+                runtime_match = runtime_marker_re.search(message)
+                if runtime_match:
+                    marker_text = runtime_match.group(1).strip()
+
+                i += 1
+
+            if not marker_text:
+                return None
+
+            pairs = re.findall(r'(\w+)=([^\s|]+)', marker_text)
+            if not pairs:
+                return {"raw": marker_text}
+
+            return {key: value for key, value in pairs}
 
     def format_contiguous_lines(self, line_numbers):
         formatted_ranges = []
