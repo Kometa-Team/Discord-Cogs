@@ -721,7 +721,10 @@ class RedBotCogLogscan(commands.Cog):
             return None
 
     def extract_quickstart_run_marker(self, content):
-        marker_pattern = re.compile(r'Quickstart run marker:\s*(.*)', re.IGNORECASE)
+        marker_pattern = re.compile(
+            r'(?:#\s*)?(?:\[Quickstart\]\s+Run marker:|Quickstart run marker:)\s*(.*)',
+            re.IGNORECASE,
+        )
         marker_text = None
 
         for match in marker_pattern.finditer(content):
