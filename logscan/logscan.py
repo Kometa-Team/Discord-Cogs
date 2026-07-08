@@ -176,9 +176,54 @@ def ensure_rar_backend():
 
 
 class MyMenu(SimpleMenu):
-    def __init__(self, *args, invoker=None, **kwargs):
+    def __init__(self, *args, invoker=None, page_entries=None, **kwargs):
         self.invoker = invoker
+        self.page_entries = page_entries or []
         super().__init__(*args, **kwargs)
+        self._apply_page_select_details()
+
+    @staticmethod
+    def _clean_component_text(value):
+        if not value:
+            return ""
+        value = str(value).replace("\r", " ").replace("\n", " ")
+        value = value.replace("`", "").replace("**", "").replace("__", "")
+        return re.sub(r"\s+", " ", value).strip()
+
+    @staticmethod
+    def _truncate_component_text(value, limit):
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3].rstrip() + "..."
+
+    def _apply_page_select_details(self):
+        if not self.page_entries:
+            return
+
+        for child in self.children:
+            if not isinstance(child, discord.ui.Select):
+                continue
+
+            existing_options = getattr(child, "options", [])
+            if len(existing_options) != len(self.page_entries):
+                continue
+
+            updated_options = []
+            for entry, option in zip(self.page_entries, existing_options):
+                page_label = f"Page {entry['page']:02d}: {self._clean_component_text(entry['name'])}"
+                summary = self._clean_component_text(entry.get("summary", ""))
+                updated_options.append(
+                    discord.SelectOption(
+                        label=self._truncate_component_text(page_label, 100),
+                        value=option.value,
+                        description=self._truncate_component_text(summary, 100) if summary else None,
+                        emoji=option.emoji,
+                        default=option.default,
+                    )
+                )
+
+            child.options = updated_options
+            break
 
     async def interaction_check(self, interaction: discord.Interaction):
         # Check if the interaction user is the invoker or has the allowed role
@@ -2528,7 +2573,8 @@ class RedBotCogLogscan(commands.Cog):
         # Add entries for each page to the TOC list
         for i, page in enumerate(pages):
             page_name = page["embed"].title  # Use the embed's title as the TOC entry name
-            toc_entries.append({"name": page_name, "page": i + 1})  # Page numbers are 1-based
+            first_line = recommendations[i]["first_line"] if i < len(recommendations) else ""
+            toc_entries.append({"name": page_name, "page": i + 1, "summary": first_line})  # Page numbers are 1-based
 
         # Define the total number of pages (including the TOC)
         total_pages = len(pages)
@@ -3100,6 +3146,7 @@ class RedBotCogLogscan(commands.Cog):
         menu = MyMenu(
             pages,
             invoker=ctx.author,
+            page_entries=toc_entries,
             timeout=MENU_TIMEOUT,
             page_start=0,
             delete_after_timeout=False,
