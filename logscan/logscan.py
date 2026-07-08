@@ -316,6 +316,17 @@ class RedBotCogLogscan(commands.Cog):
         }
         return normalized in redaction_markers
 
+    @staticmethod
+    def extract_redacted_value_from_error_message(message):
+        match = re.search(r"'([^']*)'", message or "")
+        if not match:
+            return ""
+        return match.group(1)
+
+    @staticmethod
+    def format_schema_error_path(path):
+        return " > ".join(str(part) for part in path) if path else "(root)"
+
     def add_fields_with_limit(self, embed, name, value):
         MAX_FIELD_LENGTH = 1024  # Discord's character limit for field values
         remaining_value = value
@@ -2158,11 +2169,47 @@ class RedBotCogLogscan(commands.Cog):
     def validate_against_schema(self, yaml_content, schema):
         """
         Always returns (is_valid: bool, error_details: Optional[dict]).
-        On failure, error_details is a dict with keys: message, path, validator.
+        On failure, error_details contains aggregated schema issues.
         """
         try:
-            jsonschema.validate(instance=yaml_content, schema=schema)
-            return True, None  # success: tuple + None
+            validator_cls = jsonschema.validators.validator_for(schema)
+            validator_cls.check_schema(schema)
+            validator = validator_cls(schema)
+            raw_errors = sorted(
+                validator.iter_errors(yaml_content),
+                key=lambda error: (self.format_schema_error_path(list(error.path)), error.message),
+            )
+            if not raw_errors:
+                return True, None  # success: tuple + None
+
+            issues = []
+            for error in raw_errors:
+                message = error.message
+                path = list(error.path)
+                validator_name = error.validator or "unknown"
+                redacted_value = self.extract_redacted_value_from_error_message(message)
+                is_redaction_issue = (
+                    validator_name == "pattern" and self.is_redaction_placeholder(redacted_value)
+                )
+                issues.append(
+                    {
+                        "message": message,
+                        "path": path,
+                        "validator": validator_name,
+                        "is_redaction_issue": is_redaction_issue,
+                    }
+                )
+
+            real_issue_count = sum(1 for issue in issues if not issue["is_redaction_issue"])
+            redaction_issue_count = sum(1 for issue in issues if issue["is_redaction_issue"])
+            return False, {
+                "issues": issues,
+                "real_issue_count": real_issue_count,
+                "redaction_issue_count": redaction_issue_count,
+                "message": issues[0]["message"],
+                "path": issues[0]["path"],
+                "validator": issues[0]["validator"],
+            }
         except jsonschema.ValidationError as e:
             error_details = {
                 "message": e.message,  # shorter, cleaner than str(e)
@@ -2207,39 +2254,42 @@ class RedBotCogLogscan(commands.Cog):
                 file_content = io.BytesIO(content.encode("utf-8"))
                 return parsed_yaml, valid_yaml_message, file_content
             else:
-                # Find the index of the first line break
-                line_break_index = error_details['message'].find('\n')
+                issues = error_details.get("issues", [])
+                real_issue_count = error_details.get("real_issue_count", 0)
+                redaction_issue_count = error_details.get("redaction_issue_count", 0)
 
-                # If a line break exists, truncate the message at that point
-                if line_break_index != -1:
-                    error_message = error_details['message'][:line_break_index]
-                else:
-                    error_message = error_details['message']
+                visible_issues = [issue for issue in issues if not issue.get("is_redaction_issue")]
+                if not visible_issues:
+                    visible_issues = issues
+                visible_issues = visible_issues[:5]
 
-                path = error_details.get("path", [])
-                path_text = " > ".join(str(part) for part in path) if path else "(root)"
-                validator_text = error_details.get("validator") or "unknown"
-                is_redaction_issue = (
-                    validator_text == "pattern"
-                    and self.is_redaction_placeholder(error_message.split("'", 2)[1] if error_message.startswith("'") and "'" in error_message[1:] else "")
-                )
+                issue_lines = []
+                for issue in visible_issues:
+                    issue_lines.append(
+                        f"- Path: `{self.format_schema_error_path(issue.get('path', []))}` | "
+                        f"Validator: `{issue.get('validator') or 'unknown'}` | "
+                        f"Issue: {issue.get('message', '')}"
+                    )
 
-                if is_redaction_issue:
+                issues_block = "\n".join(issue_lines)
+
+                if real_issue_count == 0 and redaction_issue_count > 0:
                     invalid_yaml_message = (
                         "⚠️ **SCHEMA VALIDATION INCONCLUSIVE DUE TO REDACTION**\n"
-                        f"Validation against the Kometa `{self.current_schema_branch}` schema hit a redacted value.\n"
-                        f"**Path:** `{path_text}`\n"
-                        f"**Validator:** `{validator_text}`\n"
-                        f"**Issue:** {error_message}\n"
-                        "This usually means the config was sanitized for sharing. Keep secrets redacted."
+                        f"Validation against the Kometa `{self.current_schema_branch}` schema only found redaction-related issues.\n"
+                        f"**Redaction-related issues:** {redaction_issue_count}\n"
+                        "This usually means the config was sanitized for sharing. Keep secrets redacted.\n\n"
+                        f"{issues_block}"
                     )
                 else:
+                    extra_note = ""
+                    if redaction_issue_count:
+                        extra_note = f"\n**Redaction-related issues hidden from failure count:** {redaction_issue_count}"
                     invalid_yaml_message = (
                         "❌ **FAILED SCHEMA VALIDATION**\n"
-                        f"Validation against the Kometa `{self.current_schema_branch}` schema failed.\n"
-                        f"**Path:** `{path_text}`\n"
-                        f"**Validator:** `{validator_text}`\n"
-                        f"**Issue:** {error_message}"
+                        f"Validation against the Kometa `{self.current_schema_branch}` schema found {real_issue_count} real issue(s)."
+                        f"{extra_note}\n\n"
+                        f"{issues_block}"
                     )
                 file_content = io.BytesIO(content.encode("utf-8"))
                 return None, invalid_yaml_message, file_content
