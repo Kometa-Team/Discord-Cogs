@@ -289,6 +289,33 @@ class RedBotCogLogscan(commands.Cog):
         self.current_schema_branch = self.determine_schema_branch()
         self.schema_url = self.schema_url_template.format(branch=self.current_schema_branch)
 
+    @staticmethod
+    def is_redaction_placeholder(value):
+        normalized = (value or "").strip().lower()
+        if not normalized:
+            return False
+
+        normalized = normalized.strip("'\"`")
+        redaction_markers = {
+            "(redacted)",
+            "<redacted>",
+            "[redacted]",
+            "redacted",
+            "<secret>",
+            "[secret]",
+            "secret",
+            "<token>",
+            "[token]",
+            "token",
+            "<apikey>",
+            "[apikey]",
+            "apikey",
+            "<api_key>",
+            "[api_key]",
+            "api_key",
+        }
+        return normalized in redaction_markers
+
     def add_fields_with_limit(self, embed, name, value):
         MAX_FIELD_LENGTH = 1024  # Discord's character limit for field values
         remaining_value = value
@@ -2192,14 +2219,28 @@ class RedBotCogLogscan(commands.Cog):
                 path = error_details.get("path", [])
                 path_text = " > ".join(str(part) for part in path) if path else "(root)"
                 validator_text = error_details.get("validator") or "unknown"
-
-                invalid_yaml_message = (
-                    "❌ **FAILED SCHEMA VALIDATION**\n"
-                    f"Validation against the Kometa `{self.current_schema_branch}` schema failed.\n"
-                    f"**Path:** `{path_text}`\n"
-                    f"**Validator:** `{validator_text}`\n"
-                    f"**Issue:** {error_message}"
+                is_redaction_issue = (
+                    validator_text == "pattern"
+                    and self.is_redaction_placeholder(error_message.split("'", 2)[1] if error_message.startswith("'") and "'" in error_message[1:] else "")
                 )
+
+                if is_redaction_issue:
+                    invalid_yaml_message = (
+                        "⚠️ **SCHEMA VALIDATION INCONCLUSIVE DUE TO REDACTION**\n"
+                        f"Validation against the Kometa `{self.current_schema_branch}` schema hit a redacted value.\n"
+                        f"**Path:** `{path_text}`\n"
+                        f"**Validator:** `{validator_text}`\n"
+                        f"**Issue:** {error_message}\n"
+                        "This usually means the config was sanitized for sharing. Keep secrets redacted."
+                    )
+                else:
+                    invalid_yaml_message = (
+                        "❌ **FAILED SCHEMA VALIDATION**\n"
+                        f"Validation against the Kometa `{self.current_schema_branch}` schema failed.\n"
+                        f"**Path:** `{path_text}`\n"
+                        f"**Validator:** `{validator_text}`\n"
+                        f"**Issue:** {error_message}"
+                    )
                 file_content = io.BytesIO(content.encode("utf-8"))
                 return None, invalid_yaml_message, file_content
 
@@ -2460,6 +2501,9 @@ class RedBotCogLogscan(commands.Cog):
             if schema_message.startswith("❌"):
                 title = "**Kometa Config.yml Schema Validation** ❌"
                 color = discord.Color.red()
+            elif schema_message.startswith("⚠"):
+                title = "**Kometa Config.yml Schema Validation** ⚠️"
+                color = discord.Color.yellow()
             else:
                 title = "**Kometa Config.yml Schema Validation** ✅"
                 color = discord.Color.green()
@@ -2680,7 +2724,12 @@ class RedBotCogLogscan(commands.Cog):
 
         schema_status = "Unavailable"
         if schema_message:
-            schema_status = "Failed" if schema_message.startswith("❌") else "Passed"
+            if schema_message.startswith("❌"):
+                schema_status = "Failed"
+            elif schema_message.startswith("⚠"):
+                schema_status = "Inconclusive"
+            else:
+                schema_status = "Passed"
 
         embed.add_field(
             name="Scan Signals",
