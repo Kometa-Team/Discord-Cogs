@@ -203,12 +203,10 @@ class MyMenu(SimpleMenu):
         self.select_options = []
         for index, entry in enumerate(self.page_entries):
             page_label = f"Page {entry['page']:02d}: {self._clean_component_text(entry['name'])}"
-            summary = self._clean_component_text(entry.get("summary", ""))
             self.select_options.append(
                 discord.SelectOption(
                     label=self._truncate_component_text(page_label, 100),
                     value=str(index),
-                    description=self._truncate_component_text(summary, 100) if summary else None,
                 )
             )
 
