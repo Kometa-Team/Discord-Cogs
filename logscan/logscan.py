@@ -242,13 +242,58 @@ class RedBotCogLogscan(commands.Cog):
         self.plex_timeout = None
         self.checkfiles_flg = None
         self.server_versions = []
-        self.schema_url = "https://raw.githubusercontent.com/kometa-team/kometa/nightly/json-schema/config-schema.json"
+        self.schema_url_template = "https://raw.githubusercontent.com/kometa-team/kometa/{branch}/json-schema/config-schema.json"
+        self.current_schema_branch = "nightly"
+        self.schema_url = self.schema_url_template.format(branch=self.current_schema_branch)
 
         initialize_variables()  # Call the method to initialize variables
 
     def reset_server_versions(self):
         """Reset the server_versions list to an empty list."""
         self.server_versions = []
+
+    def refresh_kometa_versions(self):
+        if self.version_master and self.version_develop and self.version_nightly:
+            return
+
+        try:
+            self.version_master = requests.get(
+                "https://raw.githubusercontent.com/kometa-team/Kometa/master/VERSION").text.strip()
+            self.version_develop = requests.get(
+                "https://raw.githubusercontent.com/kometa-team/Kometa/develop/VERSION").text.strip().replace("master",
+                                                                                                             "develop")
+            self.version_nightly = requests.get(
+                "https://raw.githubusercontent.com/kometa-team/Kometa/nightly/VERSION").text.strip().replace("develop",
+                                                                                                             "nightly")
+        except requests.RequestException as e:
+            mylogger.error(f"Error while fetching version information: {str(e)}")
+
+    @staticmethod
+    def _normalize_version_text(value):
+        return (value or "").strip().lower()
+
+    def determine_schema_branch(self):
+        current_version = self._normalize_version_text(self.current_kometa_version)
+        if not current_version:
+            return "nightly"
+
+        if "nightly" in current_version:
+            return "nightly"
+
+        if "develop" in current_version:
+            return "develop"
+
+        if self.version_nightly and "nightly" in self._normalize_version_text(self.version_nightly) and "nightly" in current_version:
+            return "nightly"
+
+        if self.version_develop and "develop" in self._normalize_version_text(self.version_develop) and "develop" in current_version:
+            return "develop"
+
+        return "master"
+
+    def set_schema_branch_from_current_version(self):
+        self.current_schema_branch = self.determine_schema_branch()
+        self.schema_url = self.schema_url_template.format(branch=self.current_schema_branch)
 
     def add_fields_with_limit(self, embed, name, value):
         MAX_FIELD_LENGTH = 1024  # Discord's character limit for field values
@@ -2122,6 +2167,7 @@ class RedBotCogLogscan(commands.Cog):
     def parse_yaml_schema_from_content(self, content):
         try:
             parsed_yaml = yaml.safe_load(content)
+            self.set_schema_branch_from_current_version()
             schema_response = requests.get(self.schema_url)
 
             if schema_response.status_code != 200:
@@ -2133,7 +2179,10 @@ class RedBotCogLogscan(commands.Cog):
             validation_result, error_details = self.validate_against_schema(parsed_yaml, schema)
 
             if validation_result:
-                valid_yaml_message = "✅ **PASSED SCHEMA VALIDATION**\nValidated against the Kometa schema."
+                valid_yaml_message = (
+                    "✅ **PASSED SCHEMA VALIDATION**\n"
+                    f"Validated against the Kometa `{self.current_schema_branch}` schema."
+                )
                 file_content = io.BytesIO(content.encode("utf-8"))
                 return parsed_yaml, valid_yaml_message, file_content
             else:
@@ -2145,9 +2194,18 @@ class RedBotCogLogscan(commands.Cog):
                     error_message = error_details['message'][:line_break_index]
                 else:
                     error_message = error_details['message']
-                # Create a more informative error message
-                invalid_yaml_message = f"❌ **FAILED SCHEMA VALIDATION** \nValidation against the Kometa schema[# yaml-language-server: $schema={self.schema_url}] failed due to: {error_message}\n" \
-                    # f"Path: {error_details['path']}\nValidator: {error_details['validator']}"
+
+                path = error_details.get("path", [])
+                path_text = " > ".join(str(part) for part in path) if path else "(root)"
+                validator_text = error_details.get("validator") or "unknown"
+
+                invalid_yaml_message = (
+                    "❌ **FAILED SCHEMA VALIDATION**\n"
+                    f"Validation against the Kometa `{self.current_schema_branch}` schema failed.\n"
+                    f"**Path:** `{path_text}`\n"
+                    f"**Validator:** `{validator_text}`\n"
+                    f"**Issue:** {error_message}"
+                )
                 file_content = io.BytesIO(content.encode("utf-8"))
                 return None, invalid_yaml_message, file_content
 
@@ -2339,17 +2397,7 @@ class RedBotCogLogscan(commands.Cog):
                                        f"The footer was empty/not found in {attachment.filename}. Go see recommendations pages.")
 
         # Read version information from the URLs
-        try:
-            self.version_master = requests.get(
-                "https://raw.githubusercontent.com/kometa-team/Kometa/master/VERSION").text.strip()
-            self.version_develop = requests.get(
-                "https://raw.githubusercontent.com/kometa-team/Kometa/develop/VERSION").text.strip().replace("master",
-                                                                                                             "develop")
-            self.version_nightly = requests.get(
-                "https://raw.githubusercontent.com/kometa-team/Kometa/nightly/VERSION").text.strip().replace("develop",
-                                                                                                             "nightly")
-        except requests.RequestException as e:
-            mylogger.error(f"Error while fetching version information: {str(e)}")
+        self.refresh_kometa_versions()
 
         # Add version information to the embed
         note = f"as of {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -2415,16 +2463,15 @@ class RedBotCogLogscan(commands.Cog):
             server_icon_url = message.guild.icon.url
 
         if schema_message is not None:
-            if schema_message[0].startswith("❌"):  # Check if it's an invalid message
-                title = "**WIP - Kometa Config.yml Schema Validation** ❌"
+            if schema_message.startswith("❌"):
+                title = "**Kometa Config.yml Schema Validation** ❌"
                 color = discord.Color.red()
             else:
-                title = "**WIP - Kometa Config.yml Schema Validation** ✅"
+                title = "**Kometa Config.yml Schema Validation** ✅"
                 color = discord.Color.green()
         else:
-            title = "**WIP - Kometa Config.yml Schema Validation** ❌"
+            title = "**Kometa Config.yml Schema Validation** ❌"
             color = discord.Color.red()
-            incomplete_message += "Incomplete logs attached - Kometa config.yml missing or incomplete\n"
 
         kometa_config_schema_embed = discord.Embed(title=title, color=color)
 
@@ -2432,10 +2479,20 @@ class RedBotCogLogscan(commands.Cog):
             kometa_config_schema_embed.set_thumbnail(url=server_icon_url)
 
         if schema_message:
-            # If yaml_message exceeds 4096 characters, truncate it
-            if len(schema_message) > 4096:
-                yaml_message = schema_message[:4093] + "..."
-            kometa_config_schema_embed.description = f"**WIP - Schema Validation Results**:\n\nNote: This is currently a work in progress so some of this may not be totally accurate for the time being. If you chose to extract your config.yml, open it up in an editor like Visual Studio Code where the yaml-language-server is supported and you can see where the issues might be.\n\n{schema_message}"
+            schema_summary = (
+                "**Schema Validation Results**\n\n"
+                f"This checks the extracted `config.yml` against the Kometa `{self.current_schema_branch}` JSON schema. "
+                "It can catch invalid structure or unsupported values, but it is not a full runtime guarantee.\n\n"
+                f"{schema_message}"
+            )
+
+            if len(schema_summary) > 4096:
+                schema_summary = schema_summary[:4093] + "..."
+            kometa_config_schema_embed.description = schema_summary
+        else:
+            kometa_config_schema_embed.description = (
+                "The `config.yml` was not detected within your log file, so schema validation could not run."
+            )
 
         return kometa_config_schema_embed, incomplete_message  # Return both the Embed object and the incomplete_message
 
@@ -2636,7 +2693,7 @@ class RedBotCogLogscan(commands.Cog):
             value=(
                 f"Quickstart: **{'Detected' if quickstart_marker else 'Not detected'}**\n"
                 f"YAML Validation: **{yaml_status}**\n"
-                f"Schema Validation: **{schema_status}**\n"
+                f"Schema Validation: **{schema_status}** (`{self.current_schema_branch}`)\n"
                 f"Config Extracted: **{'Yes' if config_content else 'No'}**"
             ),
             inline=True,
@@ -3089,6 +3146,7 @@ class RedBotCogLogscan(commands.Cog):
         parsed_content = await self.parse_attachment_content(content_bytes)
         # mylogger.info(f"parsed_content:{parsed_content}")
         header_lines = self.extract_header_lines(parsed_content)
+        self.refresh_kometa_versions()
         finished_lines = self.extract_last_lines(parsed_content)
         summary_lines = self.extract_finished_runs(parsed_content)
         quickstart_marker = self.extract_quickstart_run_marker(parsed_content)
@@ -3124,7 +3182,7 @@ class RedBotCogLogscan(commands.Cog):
         # mylogger.info(f"yaml_message: {yaml_message}")
         kometa_config_embed, incomplete_message = self.create_kometa_config_embed(yaml_message, ctx, incomplete_message)
         # mylogger.info(f"schema_message: {schema_message}")
-        # kometa_config_schema_embed, incomplete_message = self.create_kometa_config_schema_embed(schema_message, ctx, incomplete_message)
+        kometa_config_schema_embed, incomplete_message = self.create_kometa_config_schema_embed(schema_message, ctx, incomplete_message)
 
         # Create the Plex Config Pages embed
         plex_config_pages, incomplete_message = self.create_plex_config_pages(plex_config_sections, incomplete_message,
@@ -3225,8 +3283,8 @@ class RedBotCogLogscan(commands.Cog):
         if kometa_config_embed:
             page_entries.append(self.build_page_entry(kometa_config_embed))
 
-        # if kometa_config_schema_embed:
-        #     page_entries.append(self.build_page_entry(kometa_config_schema_embed))
+        if kometa_config_schema_embed:
+            page_entries.append(self.build_page_entry(kometa_config_schema_embed))
 
         # Check if people_posters_embed is not None (no people found), add it to pages
         if people_posters_embed:
