@@ -275,19 +275,13 @@ class RedBotCogLogscan(commands.Cog):
     def determine_schema_branch(self):
         current_version = self._normalize_version_text(self.current_kometa_version)
         if not current_version:
-            return "nightly"
+            return "master"
 
         if "nightly" in current_version:
             return "nightly"
 
         if "develop" in current_version:
-            return "develop"
-
-        if self.version_nightly and "nightly" in self._normalize_version_text(self.version_nightly) and "nightly" in current_version:
             return "nightly"
-
-        if self.version_develop and "develop" in self._normalize_version_text(self.version_develop) and "develop" in current_version:
-            return "develop"
 
         return "master"
 
