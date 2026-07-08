@@ -180,7 +180,6 @@ class MyMenu(SimpleMenu):
         self.invoker = invoker
         self.page_entries = page_entries or []
         super().__init__(*args, **kwargs)
-        self._apply_page_select_details()
 
     @staticmethod
     def _clean_component_text(value):
@@ -224,6 +223,12 @@ class MyMenu(SimpleMenu):
 
             child.options = updated_options
             break
+
+    async def refresh_page_select_details(self):
+        self._apply_page_select_details()
+        message = getattr(self, "message", None) or getattr(self, "_message", None)
+        if message is not None:
+            await message.edit(view=self)
 
     async def interaction_check(self, interaction: discord.Interaction):
         # Check if the interaction user is the invoker or has the allowed role
@@ -3161,6 +3166,7 @@ class RedBotCogLogscan(commands.Cog):
             # Check the type of ctx and use the appropriate method to start the menu
             mylogger.info(f"STANDARD: Starting menu.")
             await menu.start(ctx)  # Start the menu for regular messages
+            await menu.refresh_page_select_details()
 
         except AttributeError as e:
             # Handle the AttributeError if needed
