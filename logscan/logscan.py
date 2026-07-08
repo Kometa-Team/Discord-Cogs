@@ -2548,33 +2548,144 @@ class RedBotCogLogscan(commands.Cog):
 
         return server_icon_url
 
-    def generate_toc_entries_and_string(self, pages, recommendations):
+    @staticmethod
+    def normalize_page_title(title):
+        if not title:
+            return "Untitled"
+        title = str(title).replace("`", "").replace("**", "").replace("__", "")
+        return re.sub(r"\s+", " ", title).strip()
+
+    def build_page_entry(self, embed, content="", toc_name=None):
+        return {
+            "page": {"content": content, "embed": embed},
+            "name": toc_name or self.normalize_page_title(getattr(embed, "title", "")),
+        }
+
+    @staticmethod
+    def summarize_recommendation_counts(recommendations):
+        counts = {"critical": 0, "error": 0, "warning": 0, "info": 0}
+        for recommendation in recommendations or []:
+            first_line = recommendation.get("first_line", "")
+            if first_line.startswith("💥"):
+                counts["critical"] += 1
+            elif first_line.startswith("❌"):
+                counts["error"] += 1
+            elif first_line.startswith("⚠"):
+                counts["warning"] += 1
+            else:
+                counts["info"] += 1
+        return counts
+
+    def create_scan_summary_embed(
+        self,
+        message,
+        recommendations,
+        quickstart_marker,
+        yaml_message,
+        schema_message,
+        config_content,
+        plex_config_pages,
+        people_posters_embed,
+        incomplete_message,
+    ):
+        server_icon_url = self.get_server_icon_url(message)
+        counts = self.summarize_recommendation_counts(recommendations)
+
+        if counts["critical"] or counts["error"]:
+            color = discord.Color.red()
+            verdict = "Action needed"
+        elif counts["warning"] or incomplete_message:
+            color = discord.Color.yellow()
+            verdict = "Review recommended"
+        else:
+            color = discord.Color.green()
+            verdict = "No major issues detected"
+
+        embed = discord.Embed(
+            title="**Scan Summary**",
+            description=f"**Verdict:** {verdict}",
+            color=color,
+        )
+
+        if server_icon_url:
+            embed.set_thumbnail(url=server_icon_url)
+
+        total_recommendations = len(recommendations or [])
+        embed.add_field(
+            name="Recommendations",
+            value=(
+                f"Total: **{total_recommendations}**\n"
+                f"Critical: **{counts['critical']}**\n"
+                f"Errors: **{counts['error']}**\n"
+                f"Warnings: **{counts['warning']}**\n"
+                f"Info: **{counts['info']}**"
+            ),
+            inline=True,
+        )
+
+        yaml_status = "Not detected"
+        if yaml_message:
+            yaml_status = "Failed" if yaml_message.startswith("❌") else "Passed"
+
+        schema_status = "Unavailable"
+        if schema_message:
+            schema_status = "Failed" if schema_message.startswith("❌") else "Passed"
+
+        embed.add_field(
+            name="Scan Signals",
+            value=(
+                f"Quickstart: **{'Detected' if quickstart_marker else 'Not detected'}**\n"
+                f"YAML Validation: **{yaml_status}**\n"
+                f"Schema Validation: **{schema_status}**\n"
+                f"Config Extracted: **{'Yes' if config_content else 'No'}**"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Coverage",
+            value=(
+                f"Plex Sections: **{len(plex_config_pages)}**\n"
+                f"People Posters: **{'Yes' if people_posters_embed else 'No'}**\n"
+                f"Incomplete Sections: **{'Yes' if incomplete_message else 'No'}**"
+            ),
+            inline=True,
+        )
+
+        if incomplete_message:
+            incomplete_value = "\n".join(
+                f"- {line}" for line in incomplete_message.strip().splitlines() if line.strip()
+            )
+            if len(incomplete_value) > 1024:
+                incomplete_value = incomplete_value[:1021].rstrip() + "..."
+            embed.add_field(name="Missing or Incomplete", value=incomplete_value, inline=False)
+
+        return embed
+
+    def generate_toc_entries_and_string(self, page_entries):
         # Create an empty list to store TOC entries
         toc_entries = []
 
         # Generate the Table of Contents text
         toc_text = "Table of Contents:\n"
-        for i, page in enumerate(pages):
-            page_title = page["embed"].title
-            # Include the first line of the recommendation for each page in the TOC text
-            first_line = recommendations[i]["first_line"] if i < len(recommendations) else ""
-            toc_text += f"Page {str(i + 1).zfill(2)}: {page_title} - {first_line}\n"
+        for i, entry in enumerate(page_entries):
+            page_name = entry["name"]
+            toc_text += f"Page {str(i + 1).zfill(2)}: {page_name}\n"
 
         # Add entries for each page to the TOC list
-        for i, page in enumerate(pages):
-            page_name = page["embed"].title  # Use the embed's title as the TOC entry name
-            first_line = recommendations[i]["first_line"] if i < len(recommendations) else ""
-            toc_entries.append({"name": page_name, "page": i + 1, "summary": first_line})  # Page numbers are 1-based
+        for i, entry in enumerate(page_entries):
+            page_name = entry["name"]
+            toc_entries.append({"name": page_name, "page": i + 1})  # Page numbers are 1-based
 
         # Define the total number of pages (including the TOC)
-        total_pages = len(pages)
+        total_pages = len(page_entries)
 
         # Iterate through each page and add a footer with page number and total pages
-        for i, page in enumerate(pages):
+        for i, entry in enumerate(page_entries):
             # Calculate the current page number (1-based)
             current_page_number = i + 1
             # Create an embed for the current page
-            current_page_embed = page["embed"]
+            current_page_embed = entry["page"]["embed"]
 
             # Add a footer to the current page embed
             current_page_embed.set_footer(
@@ -3080,41 +3191,64 @@ class RedBotCogLogscan(commands.Cog):
             await self.send_to_masters(ctx, target_masters_thread_id, sohjiro_id,
                                        "**checkFiles=1** detected in a user uploaded log file by:")
 
-        # Initialize an empty list for pages
-        pages = []
+        scan_summary_embed = self.create_scan_summary_embed(
+            ctx,
+            recommendations,
+            quickstart_marker,
+            yaml_message,
+            schema_message,
+            config_content,
+            plex_config_pages,
+            people_posters_embed,
+            incomplete_message,
+        )
+
+        # Initialize an empty list for page metadata
+        page_entries = []
 
         # Add other pages if available
         if user_info_embed:
-            pages.append({"content": "", "embed": user_info_embed})
+            page_entries.append(self.build_page_entry(user_info_embed))
+
+        if scan_summary_embed:
+            page_entries.append(self.build_page_entry(scan_summary_embed))
 
         if kometa_info_embed:
-            pages.append({"content": "", "embed": kometa_info_embed})
+            page_entries.append(self.build_page_entry(kometa_info_embed))
 
         if quickstart_run_embed:
-            pages.append({"content": "", "embed": quickstart_run_embed})
+            page_entries.append(self.build_page_entry(quickstart_run_embed))
 
         if summary_info_embed:
-            pages.append({"content": "", "embed": summary_info_embed})
+            page_entries.append(self.build_page_entry(summary_info_embed))
 
         if kometa_config_embed:
-            pages.append({"content": "", "embed": kometa_config_embed})
+            page_entries.append(self.build_page_entry(kometa_config_embed))
 
         # if kometa_config_schema_embed:
-        #     pages.append({"content": "", "embed": kometa_config_schema_embed})
+        #     page_entries.append(self.build_page_entry(kometa_config_schema_embed))
 
         # Check if people_posters_embed is not None (no people found), add it to pages
         if people_posters_embed:
-            pages.append({"content": "", "embed": people_posters_embed})
+            page_entries.append(self.build_page_entry(people_posters_embed))
 
         # Add plex_config_pages if available
-        pages += plex_config_pages
+        for plex_config_page in plex_config_pages:
+            page_entries.append(
+                self.build_page_entry(
+                    plex_config_page["embed"],
+                    content=plex_config_page.get("content", ""),
+                )
+            )
 
         # Append each recommendation embed separately to the pages list
         for recommendation_embed in recommendations_embeds:
-            pages.append({"content": "", "embed": recommendation_embed})
+            page_entries.append(self.build_page_entry(recommendation_embed))
+
+        pages = [entry["page"] for entry in page_entries]
 
         # Add TOC for the "User Info" page
-        toc_entries, toc_text = self.generate_toc_entries_and_string(pages, recommendations)
+        toc_entries, toc_text = self.generate_toc_entries_and_string(page_entries)
 
         # Generate the TOC string
         toc_string = "\n".join([f"`Page {str(entry['page']).zfill(2)}:` {entry['name']}" for entry in toc_entries])
