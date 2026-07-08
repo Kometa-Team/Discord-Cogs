@@ -180,6 +180,7 @@ class MyMenu(SimpleMenu):
         self.invoker = invoker
         self.page_entries = page_entries or []
         super().__init__(*args, **kwargs)
+        self._rebuild_select_options()
 
     @staticmethod
     def _clean_component_text(value):
@@ -195,40 +196,26 @@ class MyMenu(SimpleMenu):
             return value
         return value[: limit - 3].rstrip() + "..."
 
-    def _apply_page_select_details(self):
+    def _rebuild_select_options(self):
         if not self.page_entries:
             return
 
-        for child in self.children:
-            if not isinstance(child, discord.ui.Select):
-                continue
-
-            existing_options = getattr(child, "options", [])
-            if len(existing_options) != len(self.page_entries):
-                continue
-
-            updated_options = []
-            for entry, option in zip(self.page_entries, existing_options):
-                page_label = f"Page {entry['page']:02d}: {self._clean_component_text(entry['name'])}"
-                summary = self._clean_component_text(entry.get("summary", ""))
-                updated_options.append(
-                    discord.SelectOption(
-                        label=self._truncate_component_text(page_label, 100),
-                        value=option.value,
-                        description=self._truncate_component_text(summary, 100) if summary else None,
-                        emoji=option.emoji,
-                        default=option.default,
-                    )
+        self.select_options = []
+        for index, entry in enumerate(self.page_entries):
+            page_label = f"Page {entry['page']:02d}: {self._clean_component_text(entry['name'])}"
+            summary = self._clean_component_text(entry.get("summary", ""))
+            self.select_options.append(
+                discord.SelectOption(
+                    label=self._truncate_component_text(page_label, 100),
+                    value=str(index),
+                    description=self._truncate_component_text(summary, 100) if summary else None,
                 )
+            )
 
-            child.options = updated_options
-            break
-
-    async def refresh_page_select_details(self):
-        self._apply_page_select_details()
-        message = getattr(self, "message", None) or getattr(self, "_message", None)
-        if message is not None:
-            await message.edit(view=self)
+        if self.use_select_menu and self.source.is_paginating():
+            self.remove_item(self.select_menu)
+            self.select_menu = self._get_select_menu()
+            self.add_item(self.select_menu)
 
     async def interaction_check(self, interaction: discord.Interaction):
         # Check if the interaction user is the invoker or has the allowed role
@@ -3166,7 +3153,6 @@ class RedBotCogLogscan(commands.Cog):
             # Check the type of ctx and use the appropriate method to start the menu
             mylogger.info(f"STANDARD: Starting menu.")
             await menu.start(ctx)  # Start the menu for regular messages
-            await menu.refresh_page_select_details()
 
         except AttributeError as e:
             # Handle the AttributeError if needed
