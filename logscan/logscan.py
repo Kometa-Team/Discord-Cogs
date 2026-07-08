@@ -2644,6 +2644,16 @@ class RedBotCogLogscan(commands.Cog):
         return server_icon_url
 
     @staticmethod
+    def get_channel_display_name(channel):
+        if channel is None:
+            return "Unknown Channel"
+        if hasattr(channel, "name") and getattr(channel, "name"):
+            return getattr(channel, "name")
+        if isinstance(channel, discord.PartialMessageable):
+            return "Direct Message"
+        return channel.__class__.__name__
+
+    @staticmethod
     def normalize_page_title(title):
         if not title:
             return "Untitled"
@@ -3454,7 +3464,7 @@ class RedBotCogLogscan(commands.Cog):
         # Log command invocation details
         author_name = f"{ctx.author.name}#{ctx.author.discriminator}" if ctx.author else "Unknown"
         guild_name = ctx.guild.name if ctx.guild else "Direct Message"
-        channel_name = ctx.channel.name if isinstance(ctx.channel, discord.TextChannel) else "Direct Message"
+        channel_name = self.get_channel_display_name(ctx.channel)
 
         mylogger.info(
             f"SLASH-Logscan invoked by {author_name} in {guild_name}/{channel_name} (ID: {ctx.guild.id if ctx.guild else 'N/A'}/{ctx.channel.id if ctx.guild else 'N/A'})")
@@ -3463,7 +3473,7 @@ class RedBotCogLogscan(commands.Cog):
             self.reset_server_versions()
             # Add a unique log message to identify when the event is triggered
             mylogger.info(
-                f"SLASH-Received message (ID: {message_link.id}) from {message_link.author.name} in #{message_link.channel.name}")
+                f"SLASH-Received message (ID: {message_link.id}) from {message_link.author.name} in #{self.get_channel_display_name(message_link.channel)}")
             mylogger.info(f"script_env: {script_env}")
             mylogger.info(f"ALLOWED_HELP: {ALLOWED_HELP}")
             mylogger.info(f"ALLOWED_TEST: {ALLOWED_TEST}")
@@ -3584,7 +3594,7 @@ class RedBotCogLogscan(commands.Cog):
         # Log command invocation details
         author_name = f"{message.author.name}#{message.author.discriminator}" if message.author else "Unknown"
         guild_name = message.guild.name if message.guild else "Direct Message"
-        channel_name = message.channel.name if isinstance(message.channel, discord.TextChannel) else "Direct Message"
+        channel_name = self.get_channel_display_name(message.channel)
 
         mylogger.info(
             f"Logscan invoked by {author_name} in {guild_name}/{channel_name} (ID: {message.guild.id if message.guild else 'N/A'}/{message.channel.id if message.guild else 'N/A'})")
