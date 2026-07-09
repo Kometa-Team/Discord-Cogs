@@ -328,6 +328,29 @@ class RedBotCogLogscan(commands.Cog):
     def format_schema_error_path(path):
         return " > ".join(str(part) for part in path) if path else "(root)"
 
+    def is_schema_redaction_issue(self, path, validator_name, message):
+        redacted_value = self.extract_redacted_value_from_error_message(message)
+        if not self.is_redaction_placeholder(redacted_value):
+            return False
+
+        normalized_path = [str(part).lower() for part in (path or [])]
+        if not normalized_path:
+            return validator_name in {"pattern", "anyof", "oneof", "format"}
+
+        sensitive_leafs = {
+            "url",
+            "token",
+            "apikey",
+            "api_key",
+            "client_id",
+            "client_secret",
+            "secret",
+        }
+        if normalized_path[-1] in sensitive_leafs:
+            return True
+
+        return validator_name in {"pattern", "anyof", "oneof", "format"}
+
     def fetch_schema_json(self):
         schema_url = self.schema_url
         cached_schema = self.schema_cache.get(self.current_schema_branch)
@@ -2236,10 +2259,7 @@ class RedBotCogLogscan(commands.Cog):
                 message = error.message
                 path = list(error.path)
                 validator_name = error.validator or "unknown"
-                redacted_value = self.extract_redacted_value_from_error_message(message)
-                is_redaction_issue = (
-                    validator_name == "pattern" and self.is_redaction_placeholder(redacted_value)
-                )
+                is_redaction_issue = self.is_schema_redaction_issue(path, validator_name, message)
                 issues.append(
                     {
                         "message": message,
