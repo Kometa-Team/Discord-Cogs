@@ -247,6 +247,8 @@ class RedBotCogLogscan(commands.Cog):
         self.current_schema_branch = "nightly"
         self.schema_url = self.schema_url_template.format(branch=self.current_schema_branch)
         self.schema_cache = {}
+        self.version_cache = {}
+        self.people_posters_names_cache = None
 
         initialize_variables()  # Call the method to initialize variables
 
@@ -258,17 +260,32 @@ class RedBotCogLogscan(commands.Cog):
         if self.version_master and self.version_develop and self.version_nightly:
             return
 
-        try:
-            self.version_master = requests.get(
-                "https://raw.githubusercontent.com/kometa-team/Kometa/master/VERSION").text.strip()
-            self.version_develop = requests.get(
-                "https://raw.githubusercontent.com/kometa-team/Kometa/develop/VERSION").text.strip().replace("master",
-                                                                                                             "develop")
-            self.version_nightly = requests.get(
-                "https://raw.githubusercontent.com/kometa-team/Kometa/nightly/VERSION").text.strip().replace("develop",
-                                                                                                             "nightly")
-        except requests.RequestException as e:
-            mylogger.error(f"Error while fetching version information: {str(e)}")
+        versions = self.load_versions_from_disk()
+        if versions:
+            self.version_master = versions.get("master", self.version_master)
+            self.version_develop = versions.get("develop", self.version_develop)
+            self.version_nightly = versions.get("nightly", self.version_nightly)
+            if self.version_master and self.version_develop and self.version_nightly:
+                mylogger.info("Using disk-cached Kometa branch versions")
+                return
+
+        version_sources = {}
+        for branch in ("master", "develop", "nightly"):
+            if getattr(self, f"version_{branch}", None):
+                continue
+            version_text, version_source = self.fetch_branch_version(branch)
+            if version_text:
+                setattr(self, f"version_{branch}", version_text)
+                version_sources[branch] = version_text
+                mylogger.info(f"Kometa {branch} version source: {version_source}")
+
+        if version_sources:
+            merged_versions = {
+                "master": self.version_master,
+                "develop": self.version_develop,
+                "nightly": self.version_nightly,
+            }
+            self.save_versions_to_disk(merged_versions)
 
     @staticmethod
     def _normalize_version_text(value):
@@ -446,6 +463,145 @@ class RedBotCogLogscan(commands.Cog):
                     os.remove(temp_file)
             except OSError:
                 pass
+
+    def get_version_cache_file(self):
+        return os.path.join(self.get_schema_cache_dir(), "kometa-versions.json")
+
+    def load_versions_from_disk(self):
+        if self.version_cache:
+            return self.version_cache
+
+        cache_file = self.get_version_cache_file()
+        if not os.path.exists(cache_file):
+            return {}
+
+        try:
+            with open(cache_file, "r", encoding="utf-8") as handle:
+                cached_versions = json.load(handle)
+            if isinstance(cached_versions, dict):
+                self.version_cache = cached_versions
+                return cached_versions
+        except Exception as e:
+            mylogger.warning(f"Failed to load cached Kometa versions from disk: {e}")
+        return {}
+
+    def save_versions_to_disk(self, versions):
+        cache_file = self.get_version_cache_file()
+        temp_file = f"{cache_file}.tmp"
+        try:
+            with open(temp_file, "w", encoding="utf-8") as handle:
+                json.dump(versions, handle)
+            os.replace(temp_file, cache_file)
+            self.version_cache = versions
+        except Exception as e:
+            mylogger.warning(f"Failed to save cached Kometa versions to disk: {e}")
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except OSError:
+                pass
+
+    def fetch_branch_version(self, branch):
+        cached_versions = self.load_versions_from_disk()
+        cached_value = cached_versions.get(branch)
+        if cached_value:
+            return cached_value, "disk-cache"
+
+        version_url = f"https://raw.githubusercontent.com/kometa-team/Kometa/{branch}/VERSION"
+        try:
+            response = requests.get(
+                version_url,
+                timeout=(5, 20),
+                headers={"User-Agent": "Botmoose20-Logscan/1.0"},
+            )
+        except requests.RequestException as e:
+            mylogger.warning(f"Version fetch request failed for {branch}: {type(e).__name__}: {e}")
+            if cached_value:
+                return cached_value, "disk-cache"
+            return None, "unavailable"
+
+        if response.status_code != 200:
+            mylogger.warning(
+                f"Version fetch response for {branch} returned {response.status_code} {response.reason}"
+            )
+            if cached_value:
+                return cached_value, "disk-cache"
+            return None, "unavailable"
+
+        version_text = response.text.strip()
+        if branch == "develop":
+            version_text = version_text.replace("master", "develop")
+        elif branch == "nightly":
+            version_text = version_text.replace("develop", "nightly")
+        return version_text, "live"
+
+    def get_people_posters_cache_file(self):
+        return os.path.join(self.get_schema_cache_dir(), "people-posters-readme.md")
+
+    def load_people_posters_readme_from_disk(self):
+        cache_file = self.get_people_posters_cache_file()
+        if not os.path.exists(cache_file):
+            return None
+
+        try:
+            with open(cache_file, "r", encoding="utf-8") as handle:
+                return handle.read()
+        except Exception as e:
+            mylogger.warning(f"Failed to load cached People Posters README from disk: {e}")
+            return None
+
+    def save_people_posters_readme_to_disk(self, content):
+        cache_file = self.get_people_posters_cache_file()
+        temp_file = f"{cache_file}.tmp"
+        try:
+            with open(temp_file, "w", encoding="utf-8") as handle:
+                handle.write(content)
+            os.replace(temp_file, cache_file)
+        except Exception as e:
+            mylogger.warning(f"Failed to save cached People Posters README to disk: {e}")
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except OSError:
+                pass
+
+    def fetch_people_posters_readme(self):
+        if self.people_posters_names_cache is not None:
+            return self.people_posters_names_cache, "memory-cache"
+
+        readme_url = "https://raw.githubusercontent.com/Kometa-Team/People-Images-bw/master/README.md"
+        readme_content = self.load_people_posters_readme_from_disk()
+        source = "disk-cache" if readme_content is not None else "unavailable"
+
+        if readme_content is None:
+            try:
+                response = requests.get(
+                    readme_url,
+                    timeout=(5, 20),
+                    headers={"User-Agent": "Botmoose20-Logscan/1.0"},
+                )
+                if response.status_code == 200:
+                    readme_content = response.text
+                    self.save_people_posters_readme_to_disk(readme_content)
+                    source = "live"
+                else:
+                    mylogger.warning(
+                        f"People Posters README fetch returned {response.status_code} {response.reason}"
+                    )
+            except requests.RequestException as e:
+                mylogger.warning(f"People Posters README fetch request failed: {type(e).__name__}: {e}")
+
+        if readme_content is None:
+            return None, source
+
+        online_names = set()
+        for line in readme_content.splitlines():
+            if '](https://raw.githubusercontent.com/Kometa-Team/People-Images' in line:
+                name = line.split('](')[0].split('[')[1]
+                online_names.add(name.strip())
+
+        self.people_posters_names_cache = online_names
+        return online_names, source
 
     def add_fields_with_limit(self, embed, name, value):
         MAX_FIELD_LENGTH = 1024  # Discord's character limit for field values
@@ -830,16 +986,11 @@ class RedBotCogLogscan(commands.Cog):
 
         mylogger.info("2-Unique Names after Warning Matches: %s", unique_names)
 
-        # Fetch the online content once
-        online_content = requests.get(
-            'https://raw.githubusercontent.com/Kometa-Team/People-Images-bw/master/README.md').text
-
-        online_names = set()
-        for line in online_content.splitlines():
-            if '](https://raw.githubusercontent.com/Kometa-Team/People-Images' in line:
-                # Extract the name from the URL and add it to the set
-                name = line.split('](')[0].split('[')[1]
-                online_names.add(name.strip())
+        online_names, source = self.fetch_people_posters_readme()
+        if online_names is None:
+            mylogger.warning("People Posters README unavailable and no cached copy exists; skipping People Posters scan")
+            return [], [], []
+        mylogger.info(f"People Posters README source: {source}")
 
         # mylogger.info("3-Online Names: %s",, online_names)
 
