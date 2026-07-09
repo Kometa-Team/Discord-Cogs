@@ -2340,13 +2340,15 @@ class RedBotCogLogscan(commands.Cog):
                 issues_block = "\n".join(issue_lines)
 
                 if real_issue_count == 0 and redaction_issue_count > 0:
-                    invalid_yaml_message = (
-                        "⚠️ **SCHEMA VALIDATION INCONCLUSIVE DUE TO REDACTION**\n"
-                        f"Validation against the Kometa `{self.current_schema_branch}` schema only found redaction-related issues.\n"
-                        f"**Redaction-related issues:** {redaction_issue_count}\n"
-                        "This usually means the config was sanitized for sharing. Keep secrets redacted.\n\n"
+                    valid_yaml_message = (
+                        "✅ **PASSED SCHEMA VALIDATION**\n"
+                        f"Validated against the Kometa `{self.current_schema_branch}` schema.\n"
+                        "⚠️ Some redacted values could not be fully confirmed against schema-specific rules. "
+                        "Keep secrets redacted.\n"
+                        f"**Redaction-limited checks:** {redaction_issue_count}\n\n"
                         f"{issues_block}"
                     )
+                    return parsed_yaml, valid_yaml_message, file_content
                 else:
                     extra_note = ""
                     if redaction_issue_count:
