@@ -327,6 +327,46 @@ class RedBotCogLogscan(commands.Cog):
     def format_schema_error_path(path):
         return " > ".join(str(part) for part in path) if path else "(root)"
 
+    def fetch_schema_json(self):
+        schema_url = self.schema_url
+        mylogger.info(f"Fetching schema from URL: {schema_url}")
+        try:
+            schema_response = requests.get(
+                schema_url,
+                timeout=(5, 20),
+                headers={"User-Agent": "Botmoose20-Logscan/1.0"},
+            )
+        except requests.RequestException as e:
+            mylogger.error(f"Schema fetch request failed for {schema_url}: {type(e).__name__}: {e}")
+            return None, (
+                "❌ Unable to fetch schema.\n"
+                f"Branch: `{self.current_schema_branch}`\n"
+                f"URL: `{schema_url}`\n"
+                f"Request error: `{type(e).__name__}: {e}`"
+            )
+
+        mylogger.info(
+            f"Schema fetch response for {schema_url}: {schema_response.status_code} {schema_response.reason}"
+        )
+        if schema_response.status_code != 200:
+            return None, (
+                "❌ Unable to fetch schema.\n"
+                f"Branch: `{self.current_schema_branch}`\n"
+                f"URL: `{schema_url}`\n"
+                f"HTTP status: `{schema_response.status_code} {schema_response.reason}`"
+            )
+
+        try:
+            return schema_response.json(), None
+        except ValueError as e:
+            mylogger.error(f"Schema JSON parse failed for {schema_url}: {e}")
+            return None, (
+                "❌ Unable to parse fetched schema.\n"
+                f"Branch: `{self.current_schema_branch}`\n"
+                f"URL: `{schema_url}`\n"
+                f"Parse error: `{e}`"
+            )
+
     def add_fields_with_limit(self, embed, name, value):
         MAX_FIELD_LENGTH = 1024  # Discord's character limit for field values
         remaining_value = value
@@ -2236,12 +2276,9 @@ class RedBotCogLogscan(commands.Cog):
         try:
             parsed_yaml = yaml.safe_load(content)
             self.set_schema_branch_from_current_version()
-            schema_response = requests.get(self.schema_url)
-
-            if schema_response.status_code != 200:
-                return None, "❌ Unable to fetch schema.", None
-
-            schema = schema_response.json()  # schema is already a dictionary
+            schema, schema_fetch_error = self.fetch_schema_json()
+            if schema_fetch_error:
+                return None, schema_fetch_error, None
 
             # Validate parsed_yaml against the schema
             validation_result, error_details = self.validate_against_schema(parsed_yaml, schema)
