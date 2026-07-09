@@ -329,6 +329,29 @@ class RedBotCogLogscan(commands.Cog):
     def format_schema_error_path(path):
         return " > ".join(str(part) for part in path) if path else "(root)"
 
+    def build_redaction_issue_summary(self, issues, limit=5):
+        unique_paths = []
+        seen_paths = set()
+
+        for issue in issues or []:
+            if not issue.get("is_redaction_issue"):
+                continue
+            path_text = self.format_schema_error_path(issue.get("path", []))
+            if path_text in seen_paths:
+                continue
+            seen_paths.add(path_text)
+            unique_paths.append(path_text)
+
+        if not unique_paths:
+            return ""
+
+        displayed_paths = unique_paths[:limit]
+        summary_lines = [f"- `{path}`" for path in displayed_paths]
+        remaining = len(unique_paths) - len(displayed_paths)
+        if remaining > 0:
+            summary_lines.append(f"- Plus {remaining} more redacted field(s)")
+        return "\n".join(summary_lines)
+
     def is_schema_redaction_issue(self, path, validator_name, message):
         redacted_value = self.extract_redacted_value_from_error_message(message)
         if not self.is_redaction_placeholder(redacted_value):
@@ -2388,13 +2411,17 @@ class RedBotCogLogscan(commands.Cog):
                 issues_block = "\n".join(issue_lines)
 
                 if real_issue_count == 0 and redaction_issue_count > 0:
+                    redaction_summary = self.build_redaction_issue_summary(issues)
+                    redaction_summary_block = ""
+                    if redaction_summary:
+                        redaction_summary_block = f"\n**Affected redacted fields:**\n{redaction_summary}"
                     valid_yaml_message = (
                         "✅ **PASSED SCHEMA VALIDATION**\n"
                         f"Validated against the Kometa `{self.current_schema_branch}` schema.\n"
                         "⚠️ Some redacted values could not be fully confirmed against schema-specific rules. "
                         "Keep secrets redacted.\n"
-                        f"**Redaction-limited checks:** {redaction_issue_count}\n\n"
-                        f"{issues_block}"
+                        f"**Redaction-limited checks:** {redaction_issue_count}"
+                        f"{redaction_summary_block}"
                     )
                     return parsed_yaml, valid_yaml_message, file_content
                 else:
