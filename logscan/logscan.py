@@ -245,6 +245,7 @@ class RedBotCogLogscan(commands.Cog):
         self.schema_url_template = "https://raw.githubusercontent.com/kometa-team/kometa/{branch}/json-schema/config-schema.json"
         self.current_schema_branch = "nightly"
         self.schema_url = self.schema_url_template.format(branch=self.current_schema_branch)
+        self.schema_cache = {}
 
         initialize_variables()  # Call the method to initialize variables
 
@@ -329,6 +330,11 @@ class RedBotCogLogscan(commands.Cog):
 
     def fetch_schema_json(self):
         schema_url = self.schema_url
+        cached_schema = self.schema_cache.get(self.current_schema_branch)
+        if cached_schema is not None:
+            mylogger.info(f"Using cached schema for branch: {self.current_schema_branch}")
+            return cached_schema, None
+
         mylogger.info(f"Fetching schema from URL: {schema_url}")
         try:
             schema_response = requests.get(
@@ -357,7 +363,10 @@ class RedBotCogLogscan(commands.Cog):
             )
 
         try:
-            return schema_response.json(), None
+            schema_json = schema_response.json()
+            self.schema_cache[self.current_schema_branch] = schema_json
+            mylogger.info(f"Cached schema for branch: {self.current_schema_branch}")
+            return schema_json, None
         except ValueError as e:
             mylogger.error(f"Schema JSON parse failed for {schema_url}: {e}")
             return None, (
@@ -2275,10 +2284,11 @@ class RedBotCogLogscan(commands.Cog):
     def parse_yaml_schema_from_content(self, content):
         try:
             parsed_yaml = yaml.safe_load(content)
+            file_content = io.BytesIO(content.encode("utf-8"))
             self.set_schema_branch_from_current_version()
             schema, schema_fetch_error = self.fetch_schema_json()
             if schema_fetch_error:
-                return None, schema_fetch_error, None
+                return None, schema_fetch_error, file_content
 
             # Validate parsed_yaml against the schema
             validation_result, error_details = self.validate_against_schema(parsed_yaml, schema)
@@ -2288,7 +2298,6 @@ class RedBotCogLogscan(commands.Cog):
                     "✅ **PASSED SCHEMA VALIDATION**\n"
                     f"Validated against the Kometa `{self.current_schema_branch}` schema."
                 )
-                file_content = io.BytesIO(content.encode("utf-8"))
                 return parsed_yaml, valid_yaml_message, file_content
             else:
                 issues = error_details.get("issues", [])
@@ -2328,7 +2337,6 @@ class RedBotCogLogscan(commands.Cog):
                         f"{extra_note}\n\n"
                         f"{issues_block}"
                     )
-                file_content = io.BytesIO(content.encode("utf-8"))
                 return None, invalid_yaml_message, file_content
 
         except yaml.YAMLError as e:
@@ -3292,7 +3300,9 @@ class RedBotCogLogscan(commands.Cog):
         quickstart_marker = self.extract_quickstart_run_marker(parsed_content)
         plex_config_sections = self.extract_plex_config(parsed_content)
         parsed_yaml, yaml_message, config_content = self.extract_config(parsed_content)
-        parsed_yaml, schema_message, config_content = self.extract_config_schema(parsed_content)
+        parsed_schema_yaml, schema_message, schema_config_content = self.extract_config_schema(parsed_content)
+        if not config_content and schema_config_content:
+            config_content = schema_config_content
         server_icon_url = self.get_server_icon_url(ctx)
         self.checkfiles_flg = None
 
