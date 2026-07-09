@@ -22,6 +22,7 @@ from urllib.parse import unquote
 from datetime import datetime, timedelta
 
 from redbot.core import app_commands, commands
+from redbot.core.data_manager import cog_data_path
 from redbot.core.utils.views import SimpleMenu
 
 # Create logger
@@ -358,6 +359,11 @@ class RedBotCogLogscan(commands.Cog):
             mylogger.info(f"Using cached schema for branch: {self.current_schema_branch}")
             return cached_schema, None
 
+        cached_schema = self.load_schema_from_disk(self.current_schema_branch)
+        if cached_schema is not None:
+            mylogger.info(f"Using disk-cached schema for branch: {self.current_schema_branch}")
+            return cached_schema, None
+
         mylogger.info(f"Fetching schema from URL: {schema_url}")
         try:
             schema_response = requests.get(
@@ -388,6 +394,7 @@ class RedBotCogLogscan(commands.Cog):
         try:
             schema_json = schema_response.json()
             self.schema_cache[self.current_schema_branch] = schema_json
+            self.save_schema_to_disk(self.current_schema_branch, schema_json)
             mylogger.info(f"Cached schema for branch: {self.current_schema_branch}")
             return schema_json, None
         except ValueError as e:
@@ -398,6 +405,44 @@ class RedBotCogLogscan(commands.Cog):
                 f"URL: `{schema_url}`\n"
                 f"Parse error: `{e}`"
             )
+
+    def get_schema_cache_dir(self):
+        cache_dir = os.path.join(str(cog_data_path(self)), "schema_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        return cache_dir
+
+    def get_schema_cache_file(self, branch):
+        safe_branch = re.sub(r"[^a-z0-9_.-]", "_", (branch or "master").lower())
+        return os.path.join(self.get_schema_cache_dir(), f"{safe_branch}-config-schema.json")
+
+    def load_schema_from_disk(self, branch):
+        cache_file = self.get_schema_cache_file(branch)
+        if not os.path.exists(cache_file):
+            return None
+
+        try:
+            with open(cache_file, "r", encoding="utf-8") as handle:
+                schema_json = json.load(handle)
+            self.schema_cache[branch] = schema_json
+            return schema_json
+        except Exception as e:
+            mylogger.warning(f"Failed to load cached schema from disk for {branch}: {e}")
+            return None
+
+    def save_schema_to_disk(self, branch, schema_json):
+        cache_file = self.get_schema_cache_file(branch)
+        temp_file = f"{cache_file}.tmp"
+        try:
+            with open(temp_file, "w", encoding="utf-8") as handle:
+                json.dump(schema_json, handle)
+            os.replace(temp_file, cache_file)
+        except Exception as e:
+            mylogger.warning(f"Failed to save cached schema to disk for {branch}: {e}")
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except OSError:
+                pass
 
     def add_fields_with_limit(self, embed, name, value):
         MAX_FIELD_LENGTH = 1024  # Discord's character limit for field values
