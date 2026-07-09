@@ -374,7 +374,8 @@ class RedBotCogLogscan(commands.Cog):
         except requests.RequestException as e:
             mylogger.error(f"Schema fetch request failed for {schema_url}: {type(e).__name__}: {e}")
             return None, (
-                "❌ Unable to fetch schema.\n"
+                "ℹ️ **SCHEMA VALIDATION UNAVAILABLE**\n"
+                "Logscan could not download the Kometa schema and no cached local copy was available.\n"
                 f"Branch: `{self.current_schema_branch}`\n"
                 f"URL: `{schema_url}`\n"
                 f"Request error: `{type(e).__name__}: {e}`"
@@ -385,7 +386,8 @@ class RedBotCogLogscan(commands.Cog):
         )
         if schema_response.status_code != 200:
             return None, (
-                "❌ Unable to fetch schema.\n"
+                "ℹ️ **SCHEMA VALIDATION UNAVAILABLE**\n"
+                "Logscan could not download the Kometa schema and no cached local copy was available.\n"
                 f"Branch: `{self.current_schema_branch}`\n"
                 f"URL: `{schema_url}`\n"
                 f"HTTP status: `{schema_response.status_code} {schema_response.reason}`"
@@ -400,7 +402,8 @@ class RedBotCogLogscan(commands.Cog):
         except ValueError as e:
             mylogger.error(f"Schema JSON parse failed for {schema_url}: {e}")
             return None, (
-                "❌ Unable to parse fetched schema.\n"
+                "ℹ️ **SCHEMA VALIDATION UNAVAILABLE**\n"
+                "Logscan downloaded the schema response but could not parse it, and no cached local copy was available.\n"
                 f"Branch: `{self.current_schema_branch}`\n"
                 f"URL: `{schema_url}`\n"
                 f"Parse error: `{e}`"
@@ -2663,6 +2666,9 @@ class RedBotCogLogscan(commands.Cog):
             if schema_message.startswith("❌"):
                 title = "**Kometa Config.yml Schema Validation** ❌"
                 color = discord.Color.red()
+            elif schema_message.startswith("ℹ"):
+                title = "**Kometa Config.yml Schema Validation** ℹ️"
+                color = discord.Color.orange()
             elif schema_message.startswith("⚠"):
                 title = "**Kometa Config.yml Schema Validation** ⚠️"
                 color = discord.Color.yellow()
@@ -2898,6 +2904,8 @@ class RedBotCogLogscan(commands.Cog):
         if schema_message:
             if schema_message.startswith("❌"):
                 schema_status = "Failed"
+            elif schema_message.startswith("ℹ"):
+                schema_status = "Unavailable"
             elif schema_message.startswith("⚠"):
                 schema_status = "Inconclusive"
             else:
