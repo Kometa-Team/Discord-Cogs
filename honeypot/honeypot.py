@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 import discord
 from discord.ext import tasks
@@ -14,14 +15,14 @@ DEFAULT_BAN_DAYS = 7
 
 
 class HoneypotPanel(discord.ui.View):
-    """Display-only components for the warning panel."""
+    """Display-only controls shown beneath the honeypot notice."""
 
     def __init__(self, action_count: int):
         super().__init__(timeout=None)
 
         self.add_item(
             discord.ui.Button(
-                label=f"Actions: {action_count}",
+                label=f"Bans: {action_count}",
                 emoji="🔒",
                 style=discord.ButtonStyle.secondary,
                 disabled=True,
@@ -33,7 +34,7 @@ class Honeypot(commands.Cog):
     """Temporarily ban accounts that post in a protected channel."""
 
     __author__ = "Kevin Smart"
-    __version__ = "1.0.0"
+    __version__ = "1.1.0"
 
     def __init__(self, bot):
         self.bot = bot
@@ -49,22 +50,16 @@ class Honeypot(commands.Cog):
             "bypass_role_id": None,
             "report_channel_id": None,
             "panel_message_id": None,
+            "panel_image_url": None,
             "ban_duration_days": DEFAULT_BAN_DAYS,
             "action_count": 0,
-            # Stored as:
-            # {
-            #     "user_id": {
-            #         "expires_at": ISO timestamp,
-            #         "reason": str
-            #     }
-            # }
             "temporary_bans": {},
         }
 
         self.config.register_guild(**default_guild)
 
-        # Prevent the same account being processed twice if Discord dispatches
-        # multiple messages in quick succession.
+        # Prevent the same account being handled more than once when several
+        # messages arrive before the first ban operation finishes.
         self._processing: set[tuple[int, int]] = set()
         self._processing_lock = asyncio.Lock()
 
@@ -86,7 +81,7 @@ class Honeypot(commands.Cog):
         """
         Configure the protected channel.
 
-        Use `[p]help honeypot` to see the available commands.
+        Run `[p]help honeypot` to view the available commands.
         """
 
         if ctx.invoked_subcommand is None:
@@ -98,12 +93,39 @@ class Honeypot(commands.Cog):
         ctx: commands.Context,
         channel: discord.TextChannel,
     ):
-        """Set the channel that must not receive user messages."""
+        """
+        Set the channel monitored by the honeypot.
 
-        await self.config.guild(ctx.guild).monitored_channel_id.set(channel.id)
+        You may provide a channel mention, name or ID.
+        """
 
-        # A newly selected channel will need a new panel.
-        await self.config.guild(ctx.guild).panel_message_id.set(None)
+        guild_config = self.config.guild(ctx.guild)
+        previous_channel_id = await guild_config.monitored_channel_id()
+        previous_message_id = await guild_config.panel_message_id()
+
+        # Delete the old panel when changing to a different channel.
+        if (
+            previous_channel_id
+            and previous_message_id
+            and previous_channel_id != channel.id
+        ):
+            previous_channel = ctx.guild.get_channel(previous_channel_id)
+
+            if isinstance(previous_channel, discord.TextChannel):
+                try:
+                    previous_message = await previous_channel.fetch_message(
+                        previous_message_id
+                    )
+                    await previous_message.delete()
+                except (
+                    discord.NotFound,
+                    discord.Forbidden,
+                    discord.HTTPException,
+                ):
+                    pass
+
+        await guild_config.monitored_channel_id.set(channel.id)
+        await guild_config.panel_message_id.set(None)
 
         await ctx.send(
             f"The monitored channel has been set to {channel.mention}."
@@ -115,12 +137,17 @@ class Honeypot(commands.Cog):
         ctx: commands.Context,
         role: discord.Role,
     ):
-        """Set the role permitted to test the protected channel."""
+        """
+        Set the role allowed to test the honeypot.
+
+        You may provide a role mention, name or ID.
+        """
 
         await self.config.guild(ctx.guild).bypass_role_id.set(role.id)
 
         await ctx.send(
-            f"The bypass role has been set to {role.mention}."
+            f"The bypass role has been set to {role.mention} "
+            f"(`{role.id}`)."
         )
 
     @honeypot.command(name="reportchannel")
@@ -129,44 +156,104 @@ class Honeypot(commands.Cog):
         ctx: commands.Context,
         channel: discord.TextChannel,
     ):
-        """Set the channel where enforcement reports are sent."""
+        """
+        Set the channel that receives honeypot reports.
+
+        You may provide a channel mention, name or ID.
+        """
 
         await self.config.guild(ctx.guild).report_channel_id.set(channel.id)
 
         await ctx.send(
-            f"Enforcement reports will be sent to {channel.mention}."
+            f"Honeypot reports will be sent to {channel.mention}."
         )
+
+    @honeypot.command(name="image")
+    async def set_panel_image(
+        self,
+        ctx: commands.Context,
+        image_url: str,
+    ):
+        """
+        Set the thumbnail image shown on the honeypot notice.
+
+        The image must use a direct HTTP or HTTPS URL.
+        """
+
+        if not self._is_valid_url(image_url):
+            await ctx.send(
+                "Please provide a valid direct image URL beginning with "
+                "`http://` or `https://`."
+            )
+            return
+
+        await self.config.guild(ctx.guild).panel_image_url.set(image_url)
+
+        updated = await self.update_panel(ctx.guild)
+
+        if updated:
+            await ctx.send(
+                "The image has been saved and the existing honeypot notice "
+                "has been updated."
+            )
+        else:
+            await ctx.send(
+                "The image has been saved. Run "
+                f"`{ctx.clean_prefix}honeypot post` to post the notice."
+            )
+
+    @honeypot.command(name="clearimage")
+    async def clear_panel_image(self, ctx: commands.Context):
+        """Remove the thumbnail image from the honeypot notice."""
+
+        await self.config.guild(ctx.guild).panel_image_url.set(None)
+
+        updated = await self.update_panel(ctx.guild)
+
+        if updated:
+            await ctx.send(
+                "The image has been removed from the honeypot notice."
+            )
+        else:
+            await ctx.send("The saved honeypot image has been removed.")
 
     @honeypot.command(name="duration")
     async def set_duration(
         self,
         ctx: commands.Context,
-        days: commands.Range[int, 1, 28],
+        days: int,
     ):
-        """Set the temporary-ban duration, between 1 and 28 days."""
+        """Set the temporary-ban duration, from 1 to 28 days."""
+
+        if days < 1 or days > 28:
+            await ctx.send(
+                "The ban duration must be between **1 and 28 days**."
+            )
+            return
 
         await self.config.guild(ctx.guild).ban_duration_days.set(days)
 
         await ctx.send(
-            f"Accounts will now remain banned for **{days} day"
-            f"{'s' if days != 1 else ''}**."
+            f"Honeypot bans will now last for **{days} "
+            f"day{'s' if days != 1 else ''}**."
         )
 
     @honeypot.command(name="post")
     @commands.bot_has_permissions(
+        view_channel=True,
         send_messages=True,
         embed_links=True,
     )
     async def post_panel(self, ctx: commands.Context):
-        """Post or replace the warning panel in the monitored channel."""
+        """Post or replace the notice in the monitored channel."""
 
         settings = await self.config.guild(ctx.guild).all()
         channel_id = settings["monitored_channel_id"]
 
         if channel_id is None:
             await ctx.send(
-                f"Set the monitored channel first with "
-                f"`{ctx.clean_prefix}honeypot channel #channel`."
+                "Set the monitored channel first using:\n"
+                f"`{ctx.clean_prefix}honeypot channel CHANNEL_ID`"
             )
             return
 
@@ -174,27 +261,28 @@ class Honeypot(commands.Cog):
 
         if not isinstance(channel, discord.TextChannel):
             await ctx.send(
-                "The configured monitored channel no longer exists."
+                "The configured monitored channel could not be found. "
+                "Please configure it again."
             )
             return
 
         permissions = channel.permissions_for(ctx.guild.me)
-
-        missing = []
+        missing_permissions = []
 
         if not permissions.view_channel:
-            missing.append("View Channel")
+            missing_permissions.append("View Channel")
 
         if not permissions.send_messages:
-            missing.append("Send Messages")
+            missing_permissions.append("Send Messages")
 
         if not permissions.embed_links:
-            missing.append("Embed Links")
+            missing_permissions.append("Embed Links")
 
-        if missing:
+        if missing_permissions:
             await ctx.send(
-                f"I am missing these permissions in {channel.mention}: "
-                f"**{', '.join(missing)}**."
+                f"I am missing the following permissions in "
+                f"{channel.mention}: "
+                f"**{', '.join(missing_permissions)}**."
             )
             return
 
@@ -204,18 +292,32 @@ class Honeypot(commands.Cog):
             try:
                 old_message = await channel.fetch_message(old_message_id)
                 await old_message.delete()
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            except (
+                discord.NotFound,
+                discord.Forbidden,
+                discord.HTTPException,
+            ):
                 pass
 
-        embed = self.build_panel_embed()
+        embed = self.build_panel_embed(settings["panel_image_url"])
         view = HoneypotPanel(settings["action_count"])
 
-        message = await channel.send(embed=embed, view=view)
+        try:
+            message = await channel.send(
+                embed=embed,
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException as exc:
+            await ctx.send(
+                f"I could not post the honeypot notice: `{str(exc)[:1000]}`"
+            )
+            return
 
         await self.config.guild(ctx.guild).panel_message_id.set(message.id)
 
         await ctx.send(
-            f"The protected-channel notice was posted in {channel.mention}."
+            f"The honeypot notice was posted in {channel.mention}."
         )
 
     @honeypot.command(name="status")
@@ -228,19 +330,22 @@ class Honeypot(commands.Cog):
             ctx.guild,
             settings["monitored_channel_id"],
         )
+
         report = self._channel_text(
             ctx.guild,
             settings["report_channel_id"],
         )
+
         bypass = self._role_text(
             ctx.guild,
             settings["bypass_role_id"],
         )
 
+        image_url = settings["panel_image_url"]
         temporary_bans = settings["temporary_bans"]
 
         embed = discord.Embed(
-            title="Protected-channel status",
+            title="Honeypot Configuration",
             colour=discord.Colour.orange(),
             timestamp=discord.utils.utcnow(),
         )
@@ -250,39 +355,102 @@ class Honeypot(commands.Cog):
             value=monitored,
             inline=False,
         )
+
         embed.add_field(
             name="Bypass role",
             value=bypass,
             inline=False,
         )
+
         embed.add_field(
             name="Report channel",
             value=report,
             inline=False,
         )
+
         embed.add_field(
             name="Ban duration",
-            value=f"{settings['ban_duration_days']} days",
-        )
-        embed.add_field(
-            name="Recorded actions",
-            value=str(settings["action_count"]),
-        )
-        embed.add_field(
-            name="Pending unbans",
-            value=str(len(temporary_bans)),
+            value=(
+                f"{settings['ban_duration_days']} "
+                f"day{'s' if settings['ban_duration_days'] != 1 else ''}"
+            ),
+            inline=True,
         )
 
-        await ctx.send(embed=embed)
+        embed.add_field(
+            name="Messages deleted",
+            value="Previous 3 days",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Recorded bans",
+            value=str(settings["action_count"]),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Pending automatic unbans",
+            value=str(len(temporary_bans)),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Panel posted",
+            value="Yes" if settings["panel_message_id"] else "No",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Custom image",
+            value=image_url or "Not configured",
+            inline=False,
+        )
+
+        if image_url:
+            embed.set_thumbnail(url=image_url)
+
+        await ctx.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @honeypot.command(name="reset")
     async def reset_configuration(self, ctx: commands.Context):
-        """Reset this server's honeypot configuration."""
+        """
+        Reset the honeypot configuration.
 
-        await self.config.guild(ctx.guild).clear()
+        Existing temporary-ban records are retained so users can still be
+        automatically unbanned.
+        """
+
+        guild_config = self.config.guild(ctx.guild)
+        settings = await guild_config.all()
+
+        temporary_bans = settings["temporary_bans"]
+        panel_message_id = settings["panel_message_id"]
+        monitored_channel_id = settings["monitored_channel_id"]
+
+        if panel_message_id and monitored_channel_id:
+            channel = ctx.guild.get_channel(monitored_channel_id)
+
+            if isinstance(channel, discord.TextChannel):
+                try:
+                    message = await channel.fetch_message(panel_message_id)
+                    await message.delete()
+                except (
+                    discord.NotFound,
+                    discord.Forbidden,
+                    discord.HTTPException,
+                ):
+                    pass
+
+        await guild_config.clear()
+        await guild_config.temporary_bans.set(temporary_bans)
 
         await ctx.send(
-            "The protected-channel configuration has been reset."
+            "The honeypot configuration has been reset. Existing temporary "
+            "ban records were retained so their automatic unbans still occur."
         )
 
     # -------------------------------------------------------------------------
@@ -294,14 +462,12 @@ class Honeypot(commands.Cog):
         if message.guild is None:
             return
 
-        if message.author.id == self.bot.user.id:
-            return
-
-        # Webhook messages have no normal guild-member account to punish.
-        if message.webhook_id is not None:
-            return
-
         if not isinstance(message.author, discord.Member):
+            return
+
+        # Do not act on messages from Discord bots or webhooks. This prevents
+        # another integration from accidentally being banned.
+        if message.author.bot or message.webhook_id is not None:
             return
 
         settings = await self.config.guild(message.guild).all()
@@ -336,25 +502,27 @@ class Honeypot(commands.Cog):
         member = message.author
 
         bypass_role_id = settings["bypass_role_id"]
+
         has_bypass_role = (
             bypass_role_id is not None
             and any(role.id == bypass_role_id for role in member.roles)
         )
 
-        # The server owner cannot be banned by a bot. Bot owners are also
-        # protected to avoid an accidental lockout during testing.
         is_server_owner = member.id == guild.owner_id
         is_bot_owner = await self.bot.is_owner(member)
 
         if has_bypass_role or is_server_owner or is_bot_owner:
+            if has_bypass_role:
+                bypass_type = "Configured bypass role"
+            elif is_server_owner:
+                bypass_type = "Server owner protection"
+            else:
+                bypass_type = "Red bot owner protection"
+
             await self._handle_bypass_message(
                 message=message,
                 settings=settings,
-                bypass_type=(
-                    "Configured bypass role"
-                    if has_bypass_role
-                    else "Protected owner account"
-                ),
+                bypass_type=bypass_type,
             )
             return
 
@@ -369,31 +537,48 @@ class Honeypot(commands.Cog):
         settings: dict,
         bypass_type: str,
     ):
+        message_deleted = False
+
         try:
             await message.delete()
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            message_deleted = True
+        except (
+            discord.NotFound,
+            discord.Forbidden,
+            discord.HTTPException,
+        ):
             pass
 
         embed = self.build_report_embed(
             message=message,
-            title="Protected-channel test triggered",
+            title="Honeypot Test Triggered",
             colour=discord.Colour.gold(),
         )
 
         embed.description = (
-            f"{message.author.mention} posted in the protected channel, "
-            "but no action was taken."
+            f"{message.author.mention} posted in the monitored channel, "
+            "but no moderation action was taken."
         )
 
         embed.add_field(
-            name="Result",
-            value="The account would normally have been temporarily banned.",
+            name="Test result",
+            value=(
+                "This account would normally have been temporarily banned "
+                f"for **{settings['ban_duration_days']} days**."
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="Bypass",
+            name="Bypass reason",
             value=bypass_type,
             inline=False,
+        )
+
+        embed.add_field(
+            name="Test message deleted",
+            value="Yes" if message_deleted else "No",
+            inline=True,
         )
 
         await self.send_report(
@@ -411,32 +596,41 @@ class Honeypot(commands.Cog):
         member = message.author
 
         duration_days = settings["ban_duration_days"]
-        expires_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            days=duration_days
+        )
 
         reason = (
-            f"Posted in protected channel #{message.channel.name}. "
-            f"Temporary ban for {duration_days} days."
+            f"Posted in monitored channel #{message.channel.name}. "
+            f"Temporary honeypot ban for {duration_days} days."
         )
 
         report_embed = self.build_report_embed(
             message=message,
-            title="Protected-channel ban",
+            title="Honeypot Ban",
             colour=discord.Colour.red(),
         )
 
         report_embed.description = (
-            f"{member.mention} posted in the protected channel and was "
+            f"{member.mention} posted in the monitored channel and was "
             f"temporarily banned for **{duration_days} days**."
         )
 
         report_embed.add_field(
             name="Ban expires",
-            value=discord.utils.format_dt(expires_at, style="F"),
+            value=(
+                f"{discord.utils.format_dt(expires_at, style='F')}\n"
+                f"({discord.utils.format_dt(expires_at, style='R')})"
+            ),
             inline=False,
         )
+
         report_embed.add_field(
             name="Message deletion",
-            value="Messages from the previous three days were requested for deletion.",
+            value=(
+                "Discord was instructed to delete the account's messages "
+                "from the previous **3 days** across the server."
+            ),
             inline=False,
         )
 
@@ -448,15 +642,15 @@ class Honeypot(commands.Cog):
             )
 
         except discord.Forbidden:
-            report_embed.title = "Protected-channel ban failed"
+            report_embed.title = "Honeypot Ban Failed"
             report_embed.colour = discord.Colour.dark_red()
 
             report_embed.add_field(
                 name="Error",
                 value=(
-                    "Discord refused the ban. Check that the bot has "
-                    "**Ban Members** and that its highest role is above the "
-                    "member's highest role."
+                    "Discord refused the ban. Check that the bot has the "
+                    "**Ban Members** permission and that its highest role is "
+                    "above the member's highest role."
                 ),
                 inline=False,
             )
@@ -474,7 +668,7 @@ class Honeypot(commands.Cog):
                 guild.id,
             )
 
-            report_embed.title = "Protected-channel ban failed"
+            report_embed.title = "Honeypot Ban Failed"
             report_embed.colour = discord.Colour.dark_red()
 
             report_embed.add_field(
@@ -494,10 +688,12 @@ class Honeypot(commands.Cog):
             bans[str(member.id)] = {
                 "expires_at": expires_at.isoformat(),
                 "reason": reason,
+                "username": str(member),
             }
 
         action_count = await self.config.guild(guild).action_count()
         action_count += 1
+
         await self.config.guild(guild).action_count.set(action_count)
 
         await self.send_report(
@@ -506,10 +702,10 @@ class Honeypot(commands.Cog):
             embed=report_embed,
         )
 
-        await self.update_panel(guild, action_count)
+        await self.update_panel(guild, action_count=action_count)
 
     # -------------------------------------------------------------------------
-    # Temporary-ban expiry
+    # Automatic unbanning
     # -------------------------------------------------------------------------
 
     @tasks.loop(minutes=1)
@@ -522,7 +718,7 @@ class Honeypot(commands.Cog):
             if not bans:
                 continue
 
-            expired_user_ids = []
+            completed_user_ids = []
 
             for user_id_text, ban_data in bans.items():
                 try:
@@ -532,15 +728,18 @@ class Honeypot(commands.Cog):
                     )
 
                     if expires_at.tzinfo is None:
-                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+                        expires_at = expires_at.replace(
+                            tzinfo=timezone.utc
+                        )
 
                 except (KeyError, TypeError, ValueError):
                     log.warning(
-                        "Removing invalid temporary-ban record for guild %s: %r",
+                        "Removing invalid honeypot ban record for guild %s: %r",
                         guild.id,
                         user_id_text,
                     )
-                    expired_user_ids.append(user_id_text)
+
+                    completed_user_ids.append(user_id_text)
                     continue
 
                 if expires_at > now:
@@ -549,11 +748,11 @@ class Honeypot(commands.Cog):
                 try:
                     await guild.unban(
                         discord.Object(id=user_id),
-                        reason="Protected-channel temporary ban expired.",
+                        reason="Honeypot temporary ban expired.",
                     )
 
                 except discord.NotFound:
-                    # Someone already removed the ban manually.
+                    # A moderator has already removed the ban.
                     pass
 
                 except discord.Forbidden:
@@ -572,17 +771,25 @@ class Honeypot(commands.Cog):
                     )
                     continue
 
-                expired_user_ids.append(user_id_text)
+                completed_user_ids.append(user_id_text)
 
                 settings = await self.config.guild(guild).all()
+                stored_username = ban_data.get("username", "Unknown")
 
                 embed = discord.Embed(
-                    title="Temporary ban expired",
+                    title="Honeypot Ban Expired",
                     description=(
-                        f"<@{user_id}>'s protected-channel ban has expired."
+                        f"The temporary honeypot ban for <@{user_id}> "
+                        "has expired and the account has been unbanned."
                     ),
                     colour=discord.Colour.green(),
                     timestamp=discord.utils.utcnow(),
+                )
+
+                embed.add_field(
+                    name="Username when banned",
+                    value=discord.utils.escape_markdown(stored_username),
+                    inline=False,
                 )
 
                 embed.add_field(
@@ -597,9 +804,9 @@ class Honeypot(commands.Cog):
                     embed=embed,
                 )
 
-            if expired_user_ids:
+            if completed_user_ids:
                 async with self.config.guild(guild).temporary_bans() as stored:
-                    for user_id_text in expired_user_ids:
+                    for user_id_text in completed_user_ids:
                         stored.pop(user_id_text, None)
 
     @expired_ban_loop.before_loop
@@ -611,26 +818,22 @@ class Honeypot(commands.Cog):
     # -------------------------------------------------------------------------
 
     @staticmethod
-    def build_panel_embed() -> discord.Embed:
+    def build_panel_embed(
+        image_url: Optional[str] = None,
+    ) -> discord.Embed:
         embed = discord.Embed(
-            title="READ-ONLY SYSTEM CHANNEL",
+            title="DO NOT SEND MESSAGES IN THIS CHANNEL",
             description=(
-                "This channel is reserved for automated server processing.\n\n"
-                "Please do not send messages here. Posting may cause your "
-                "server access to be restricted automatically."
+                "This channel is reserved for automated system processing "
+                "and should never receive user messages.\n\n"
+                "Messages posted here are handled automatically and will "
+                "result in your access to this server being removed."
             ),
-            colour=discord.Colour.from_rgb(232, 143, 39),
+            colour=discord.Colour.orange(),
         )
 
-        embed.add_field(
-            name="Need assistance?",
-            value="Use one of the server's normal support or general channels.",
-            inline=False,
-        )
-
-        embed.set_footer(
-            text="Automated access protection"
-        )
+        if image_url:
+            embed.set_thumbnail(url=image_url)
 
         return embed
 
@@ -653,10 +856,15 @@ class Honeypot(commands.Cog):
             icon_url=member.display_avatar.url,
         )
 
+        embed.set_thumbnail(url=member.display_avatar.url)
+
         embed.add_field(
             name="Account",
             value=(
-                f"**Username:** {discord.utils.escape_markdown(str(member))}\n"
+                f"**Username:** "
+                f"{discord.utils.escape_markdown(str(member))}\n"
+                f"**Display name:** "
+                f"{discord.utils.escape_markdown(member.display_name)}\n"
                 f"**Mention:** {member.mention}\n"
                 f"**User ID:** `{member.id}`"
             ),
@@ -665,17 +873,17 @@ class Honeypot(commands.Cog):
 
         embed.add_field(
             name="Account created",
-            value=discord.utils.format_dt(
-                member.created_at,
-                style="F",
+            value=(
+                f"{discord.utils.format_dt(member.created_at, style='F')}\n"
+                f"({discord.utils.format_dt(member.created_at, style='R')})"
             ),
             inline=True,
         )
 
         if member.joined_at:
-            joined_value = discord.utils.format_dt(
-                member.joined_at,
-                style="F",
+            joined_value = (
+                f"{discord.utils.format_dt(member.joined_at, style='F')}\n"
+                f"({discord.utils.format_dt(member.joined_at, style='R')})"
             )
         else:
             joined_value = "Unknown"
@@ -688,13 +896,13 @@ class Honeypot(commands.Cog):
 
         role_mentions = [
             role.mention
-            for role in member.roles
+            for role in reversed(member.roles)
             if role != message.guild.default_role
         ]
 
         embed.add_field(
             name="Roles",
-            value=", ".join(role_mentions)[0:1024] or "No roles",
+            value=", ".join(role_mentions)[:1024] or "No roles",
             inline=False,
         )
 
@@ -702,8 +910,8 @@ class Honeypot(commands.Cog):
 
         if not content:
             content = "*No text content*"
-
-        content = discord.utils.escape_markdown(content)
+        else:
+            content = discord.utils.escape_markdown(content)
 
         if len(content) > 1000:
             content = content[:997] + "..."
@@ -721,20 +929,28 @@ class Honeypot(commands.Cog):
         )
 
         embed.add_field(
+            name="Message ID",
+            value=f"`{message.id}`",
+            inline=True,
+        )
+
+        embed.add_field(
             name="Attachments",
             value=str(len(message.attachments)),
             inline=True,
         )
 
         if message.attachments:
-            attachment_names = "\n".join(
-                f"• {attachment.filename}"
-                for attachment in message.attachments[:10]
-            )
+            attachment_lines = []
+
+            for attachment in message.attachments[:10]:
+                attachment_lines.append(
+                    f"• [{attachment.filename}]({attachment.url})"
+                )
 
             embed.add_field(
-                name="Attachment names",
-                value=attachment_names[:1024],
+                name="Attachment details",
+                value="\n".join(attachment_lines)[:1024],
                 inline=False,
             )
 
@@ -768,47 +984,68 @@ class Honeypot(commands.Cog):
                 embed=embed,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+
         except discord.HTTPException:
             log.exception(
-                "Failed to send honeypot report in guild %s",
+                "Failed to send a honeypot report in guild %s",
                 guild.id,
             )
 
     async def update_panel(
         self,
         guild: discord.Guild,
-        action_count: int,
-    ):
+        action_count: Optional[int] = None,
+    ) -> bool:
         settings = await self.config.guild(guild).all()
 
         channel_id = settings["monitored_channel_id"]
         message_id = settings["panel_message_id"]
 
         if channel_id is None or message_id is None:
-            return
+            return False
 
         channel = guild.get_channel(channel_id)
 
         if not isinstance(channel, discord.TextChannel):
-            return
+            return False
+
+        if action_count is None:
+            action_count = settings["action_count"]
 
         try:
             message = await channel.fetch_message(message_id)
 
             await message.edit(
-                embed=self.build_panel_embed(),
+                embed=self.build_panel_embed(
+                    settings["panel_image_url"]
+                ),
                 view=HoneypotPanel(action_count),
             )
 
-        except (
-            discord.NotFound,
-            discord.Forbidden,
-            discord.HTTPException,
-        ):
-            log.warning(
+            return True
+
+        except discord.NotFound:
+            await self.config.guild(guild).panel_message_id.set(None)
+            return False
+
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception(
                 "Could not update the honeypot panel in guild %s",
                 guild.id,
             )
+            return False
+
+    @staticmethod
+    def _is_valid_url(value: str) -> bool:
+        try:
+            parsed = urlparse(value)
+        except ValueError:
+            return False
+
+        return (
+            parsed.scheme in {"http", "https"}
+            and bool(parsed.netloc)
+        )
 
     @staticmethod
     def _channel_text(
