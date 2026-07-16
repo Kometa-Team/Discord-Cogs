@@ -3269,12 +3269,24 @@ class RedBotCogLogscan(commands.Cog):
         base_name, extension = os.path.splitext(filename)
         return base_name, extension.lower()
 
-    def extract_existing_tracking_stem(self, filename):
+    def parse_tracking_components(self, filename):
         base_name, _ = self.split_filename(os.path.basename(filename))
-        match = re.match(r"^(?P<stem>.+_[0-9a-f]{8})(?:_config)?$", base_name)
-        if not match:
+        patterns = [
+            r"^(?P<base>.+)_config_(?P<author>[^_]+)_(?P<suffix>[0-9a-f]{8})$",
+            r"^(?P<base>.+)_(?P<author>[^_]+)_(?P<suffix>[0-9a-f]{8})_config$",
+            r"^(?P<base>.+)_(?P<author>[^_]+)_(?P<suffix>[0-9a-f]{8})$",
+        ]
+        for pattern in patterns:
+            match = re.match(pattern, base_name)
+            if match:
+                return match.groupdict()
+        return None
+
+    def extract_existing_tracking_stem(self, filename):
+        components = self.parse_tracking_components(filename)
+        if not components:
             return None
-        return match.group("stem")
+        return f"{components['base']}_{components['author']}_{components['suffix']}"
 
     def build_tracked_filename(self, filename, source_author, unique_seed):
         existing_tracking_stem = self.extract_existing_tracking_stem(filename)
@@ -3300,11 +3312,21 @@ class RedBotCogLogscan(commands.Cog):
         )
 
     def build_parsed_config_filename(self, attachment, source_author):
-        existing_tracking_stem = self.extract_existing_tracking_stem(attachment.filename)
-        if existing_tracking_stem:
-            return f"{existing_tracking_stem}_config.yml"
+        existing_components = self.parse_tracking_components(attachment.filename)
+        if existing_components:
+            return (
+                f"{existing_components['base']}_config_"
+                f"{existing_components['author']}_{existing_components['suffix']}.yml"
+            )
 
         tracked_filename = self.build_attachment_tracking_name(attachment, source_author)
+        tracked_components = self.parse_tracking_components(tracked_filename)
+        if tracked_components:
+            return (
+                f"{tracked_components['base']}_config_"
+                f"{tracked_components['author']}_{tracked_components['suffix']}.yml"
+            )
+
         tracked_base_name, _ = self.split_filename(tracked_filename)
         return f"{tracked_base_name}_config.yml"
 
