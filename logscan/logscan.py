@@ -13,6 +13,7 @@ import py7zr
 import tempfile
 import string
 import random
+import uuid
 import jsonschema
 import json
 import logging
@@ -2703,9 +2704,21 @@ class RedBotCogLogscan(commands.Cog):
 
     def create_user_info_embed(self, user, invoker, filename):
         # Create an embed for the "User Info" page
+        tracked_filename = None
+        if isinstance(filename, tuple):
+            filename, tracked_filename = filename
+
+        description = (
+            f"**Author of Linked Message:** {user.display_name}\n"
+            f"**Person who Invoked the Command:** {invoker.display_name}\n"
+            f"**File Name:** {filename}"
+        )
+        if tracked_filename and tracked_filename != filename:
+            description += f"\n**Tracked File Name:** {tracked_filename}"
+
         user_info_embed = discord.Embed(
             title="**User Info**",
-            description=f"**Author of Linked Message:** {user.display_name}\n**Person who Invoked the Command:** {invoker.display_name}\n**File Name:** {filename}",
+            description=description,
             color=discord.Color.blurple(),
         )
 
@@ -2911,8 +2924,9 @@ class RedBotCogLogscan(commands.Cog):
                 config_content_str = schema_url_line + "\n" + added_by_bot_line + "\n" + config_content_str
 
             # Send the updated content as a file
+            parsed_filename = self.build_parsed_config_filename(attachment, linked_message_author)
             await ctx.send(file=discord.File(io.BytesIO(config_content_str.encode("utf-8")),
-                                             filename=f"parsed_{attachment.filename}_config_{linked_message_author.display_name}.yml"))
+                                             filename=parsed_filename))
         else:
             mylogger.info("Config content is empty or invalid.")
             await ctx.response.send_message(
@@ -3237,6 +3251,40 @@ class RedBotCogLogscan(commands.Cog):
         characters = string.ascii_letters + string.digits
         return ''.join(random.choice(characters) for _ in range(length))
 
+    def sanitize_filename_part(self, value, fallback="unknown"):
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", (value or "").strip().lower())
+        cleaned = cleaned.strip("._-")
+        return cleaned or fallback
+
+    def split_filename(self, filename):
+        if filename.lower().endswith(".tar.gz"):
+            return filename[:-7], ".tar.gz"
+        base_name, extension = os.path.splitext(filename)
+        return base_name, extension.lower()
+
+    def build_tracked_filename(self, filename, source_author, unique_seed):
+        base_name, extension = self.split_filename(os.path.basename(filename))
+        author_name = getattr(source_author, "display_name", None) or getattr(source_author, "name", None) or "user"
+        author_part = self.sanitize_filename_part(author_name, "user")
+        base_part = self.sanitize_filename_part(base_name or "attachment", "attachment")
+        unique_part = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{getattr(source_author, 'id', 0)}:{unique_seed}",
+        ).hex[:8]
+        return f"{base_part}_{author_part}_{unique_part}{extension}"
+
+    def build_attachment_tracking_name(self, attachment, source_author):
+        return self.build_tracked_filename(
+            attachment.filename,
+            source_author,
+            f"{getattr(attachment, 'id', 0)}:{attachment.filename}",
+        )
+
+    def build_parsed_config_filename(self, attachment, source_author):
+        tracked_filename = self.build_attachment_tracking_name(attachment, source_author)
+        tracked_base_name, _ = self.split_filename(tracked_filename)
+        return f"{tracked_base_name}_config.yml"
+
     def create_unique_temp_dir(self, message_id):
         """
         Creates a unique temporary directory based on the message ID.
@@ -3433,9 +3481,10 @@ class RedBotCogLogscan(commands.Cog):
 
         return extracted_files
 
-    async def handle_compressed_file(self, ctx, attachment):
+    async def handle_compressed_file(self, ctx, attachment, source_author=None):
         extension = detect_archive_type(attachment.filename)
         message_id = ctx.message.id
+        source_author = source_author or getattr(ctx, "author", None)
 
         extracted_files = []
 
@@ -3443,13 +3492,17 @@ class RedBotCogLogscan(commands.Cog):
             temp_dir = self.create_unique_temp_dir(message_id)
             os.makedirs(temp_dir, exist_ok=True)
 
-            compressed_path = os.path.join(temp_dir, attachment.filename)
+            local_filename = self.build_attachment_tracking_name(attachment, source_author)
+            compressed_path = os.path.join(temp_dir, local_filename)
 
             try:
                 await attachment.save(compressed_path)
+                mylogger.info(
+                    f"Saved attachment locally as {local_filename} for source file {attachment.filename}"
+                )
                 extracted_files = self._extract_archive_entries(
                     compressed_path,
-                    attachment.filename,
+                    local_filename,
                     attachment.filename,
                 )
 
@@ -3541,7 +3594,12 @@ class RedBotCogLogscan(commands.Cog):
         # mylogger.info(f"Summary Lines: {summary_lines}")
 
         # Call the create_user_info_embed method
-        user_info_embed = self.create_user_info_embed(linked_message_author, invoker, attachment.filename)
+        tracked_filename = self.build_attachment_tracking_name(attachment, linked_message_author)
+        user_info_embed = self.create_user_info_embed(
+            linked_message_author,
+            invoker,
+            (attachment.filename, tracked_filename),
+        )
         # mylogger.info("user_info_embed:")
         # mylogger.info(f"Title: {user_info_embed.title}")
         # mylogger.info(f"Description: {user_info_embed.description}")
@@ -3832,7 +3890,7 @@ class RedBotCogLogscan(commands.Cog):
                     if extension in SUPPORTED_COMPRESSED_FORMATS:
                         mylogger.info(
                             f"SLASH-Compressed file detected. Sending {attachment.filename} to handle_compressed_file")
-                        extracted_files = await self.handle_compressed_file(ctx, attachment)
+                        extracted_files = await self.handle_compressed_file(ctx, attachment, linked_message.author)
 
                         # Process each extracted file
                         for extracted_file in extracted_files:
@@ -3989,7 +4047,7 @@ class RedBotCogLogscan(commands.Cog):
 
                 if extension in SUPPORTED_COMPRESSED_FORMATS:
                     mylogger.info(f"Compressed file detected. Sending {attachment.filename} to handle_compressed_file")
-                    extracted_files = await self.handle_compressed_file(ctx, attachment)
+                    extracted_files = await self.handle_compressed_file(ctx, attachment, user)
 
                     # Process each extracted file
                     for extracted_file in extracted_files:
