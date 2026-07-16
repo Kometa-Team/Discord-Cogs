@@ -2936,7 +2936,8 @@ class RedBotCogLogscan(commands.Cog):
     async def send_tracked_attachment_copy(self, ctx, linked_message_author, attachment):
         tracked_filename = self.build_attachment_tracking_name(attachment, linked_message_author)
         tracked_file = await attachment.to_file(filename=tracked_filename)
-        await ctx.send(file=tracked_file)
+        provenance_note = self.build_provenance_note(attachment, linked_message_author)
+        await ctx.send(provenance_note, file=tracked_file)
         return tracked_filename
 
     def create_plex_config_pages(self, plex_config_sections, incomplete_message, message):
@@ -3306,6 +3307,15 @@ class RedBotCogLogscan(commands.Cog):
         tracked_filename = self.build_attachment_tracking_name(attachment, source_author)
         tracked_base_name, _ = self.split_filename(tracked_filename)
         return f"{tracked_base_name}_config.yml"
+
+    def build_provenance_note(self, attachment, source_author):
+        original_uploader = getattr(source_author, "display_name", None) or getattr(source_author, "name", None) or "Unknown"
+        original_filename = attachment.filename
+        return (
+            f"Tracked copy for download.\n"
+            f"Original uploader: {original_uploader}\n"
+            f"Original filename: {original_filename}"
+        )
 
     def create_unique_temp_dir(self, message_id):
         """
