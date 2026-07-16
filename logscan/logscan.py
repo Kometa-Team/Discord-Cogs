@@ -2933,6 +2933,12 @@ class RedBotCogLogscan(commands.Cog):
                 "💥An error occurred while processing the attachment. Config content is empty or invalid.💥",
                 ephemeral=True)
 
+    async def send_tracked_attachment_copy(self, ctx, linked_message_author, attachment):
+        tracked_filename = self.build_attachment_tracking_name(attachment, linked_message_author)
+        tracked_file = await attachment.to_file(filename=tracked_filename)
+        await ctx.send(file=tracked_file)
+        return tracked_filename
+
     def create_plex_config_pages(self, plex_config_sections, incomplete_message, message):
         # Initialize server_icon_url to None
         server_icon_url = None
@@ -3262,7 +3268,19 @@ class RedBotCogLogscan(commands.Cog):
         base_name, extension = os.path.splitext(filename)
         return base_name, extension.lower()
 
+    def extract_existing_tracking_stem(self, filename):
+        base_name, _ = self.split_filename(os.path.basename(filename))
+        match = re.match(r"^(?P<stem>.+_[0-9a-f]{8})(?:_config)?$", base_name)
+        if not match:
+            return None
+        return match.group("stem")
+
     def build_tracked_filename(self, filename, source_author, unique_seed):
+        existing_tracking_stem = self.extract_existing_tracking_stem(filename)
+        if existing_tracking_stem:
+            _, extension = self.split_filename(os.path.basename(filename))
+            return f"{existing_tracking_stem}{extension}"
+
         base_name, extension = self.split_filename(os.path.basename(filename))
         author_name = getattr(source_author, "display_name", None) or getattr(source_author, "name", None) or "user"
         author_part = self.sanitize_filename_part(author_name, "user")
@@ -3281,6 +3299,10 @@ class RedBotCogLogscan(commands.Cog):
         )
 
     def build_parsed_config_filename(self, attachment, source_author):
+        existing_tracking_stem = self.extract_existing_tracking_stem(attachment.filename)
+        if existing_tracking_stem:
+            return f"{existing_tracking_stem}_config.yml"
+
         tracked_filename = self.build_attachment_tracking_name(attachment, source_author)
         tracked_base_name, _ = self.split_filename(tracked_filename)
         return f"{tracked_base_name}_config.yml"
@@ -3568,7 +3590,18 @@ class RedBotCogLogscan(commands.Cog):
                                                 f"and paste the value copied from the previous step where you see `<message_link>` 📝",
                                     color=discord.Color.blurple()))
 
-    async def process_attachment(self, ctx, linked_message_author, invoker, attachment, content, content_bytes):
+    async def process_attachment(
+        self,
+        ctx,
+        linked_message_author,
+        invoker,
+        attachment,
+        content,
+        content_bytes,
+        *,
+        delete_source_message=False,
+        source_message=None,
+    ):
         # Your processing code when "✅" is clicked
         mylogger.info(f"process_attachment is starting")
         incomplete_message = ""
@@ -3594,7 +3627,7 @@ class RedBotCogLogscan(commands.Cog):
         # mylogger.info(f"Summary Lines: {summary_lines}")
 
         # Call the create_user_info_embed method
-        tracked_filename = self.build_attachment_tracking_name(attachment, linked_message_author)
+        tracked_filename = await self.send_tracked_attachment_copy(ctx, linked_message_author, attachment)
         user_info_embed = self.create_user_info_embed(
             linked_message_author,
             invoker,
@@ -3827,6 +3860,25 @@ class RedBotCogLogscan(commands.Cog):
         # Call the send_completion_message function
         # await self.send_completion_message(ctx, attachment)
 
+        if delete_source_message and source_message is not None:
+            try:
+                await source_message.delete()
+                mylogger.info(
+                    f"Deleted original source message {source_message.id} after posting tracked attachment copy."
+                )
+            except discord.NotFound:
+                mylogger.info(
+                    f"Original source message {getattr(source_message, 'id', 'unknown')} was already deleted."
+                )
+            except discord.Forbidden:
+                mylogger.warning(
+                    f"Missing permission to delete original source message {getattr(source_message, 'id', 'unknown')}."
+                )
+            except discord.HTTPException as e:
+                mylogger.warning(
+                    f"Failed to delete original source message {getattr(source_message, 'id', 'unknown')}: {e}"
+                )
+
     @commands.hybrid_command(name="logscan")
     @app_commands.describe(message_link="The discord message link you want to scan.")
     async def kometa_logscan(self, ctx: commands.Context, message_link: commands.MessageConverter):
@@ -3904,9 +3956,14 @@ class RedBotCogLogscan(commands.Cog):
 
                                     if decision == "✅":
                                         # Rest of the processing code when "✅" is clicked
-                                        await self.process_attachment(ctx, linked_message.author, ctx.author,
-                                                                      attachment, content,
-                                                                      content_bytes)
+                                        await self.process_attachment(
+                                            ctx,
+                                            linked_message.author,
+                                            ctx.author,
+                                            attachment,
+                                            content,
+                                            content_bytes,
+                                        )
                                 else:
                                     if bad_channel:
                                         await ctx.reply(bad_channel_msg, delete_after=20, suppress_embeds=True)
@@ -3931,9 +3988,14 @@ class RedBotCogLogscan(commands.Cog):
                             decision, invoker = await self.prompt_user_and_get_decision(ctx, attachment)
 
                             if decision == "✅":
-                                await self.process_attachment(ctx, linked_message.author, ctx.author, attachment,
-                                                              content,
-                                                              content_bytes)
+                                await self.process_attachment(
+                                    ctx,
+                                    linked_message.author,
+                                    ctx.author,
+                                    attachment,
+                                    content,
+                                    content_bytes,
+                                )
                         else:
                             if bad_channel:
                                 await ctx.reply(bad_channel_msg, delete_after=20, suppress_embeds=True)
@@ -4061,8 +4123,16 @@ class RedBotCogLogscan(commands.Cog):
 
                                 if decision == "✅":
                                     # Rest of the processing code when "✅" is clicked
-                                    await self.process_attachment(ctx, user, invoker, attachment, content,
-                                                                  content_bytes)
+                                    await self.process_attachment(
+                                        ctx,
+                                        user,
+                                        invoker,
+                                        attachment,
+                                        content,
+                                        content_bytes,
+                                        delete_source_message=True,
+                                        source_message=message,
+                                    )
                             else:
                                 if bad_channel:
                                     await message.reply(bad_channel_msg, delete_after=20, suppress_embeds=True)
@@ -4089,7 +4159,16 @@ class RedBotCogLogscan(commands.Cog):
 
                         if decision == "✅":
                             # Rest of the processing code when "✅" is clicked
-                            await self.process_attachment(ctx, user, invoker, attachment, content, content_bytes)
+                            await self.process_attachment(
+                                ctx,
+                                user,
+                                invoker,
+                                attachment,
+                                content,
+                                content_bytes,
+                                delete_source_message=True,
+                                source_message=message,
+                            )
                     else:
                         mylogger.info(f"kometa string not found")
                         if bad_channel:
