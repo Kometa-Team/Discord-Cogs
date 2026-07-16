@@ -18,6 +18,7 @@ import jsonschema
 import json
 import logging
 import shutil
+from types import SimpleNamespace
 
 from urllib.parse import unquote
 from datetime import datetime, timedelta
@@ -2904,7 +2905,7 @@ class RedBotCogLogscan(commands.Cog):
 
         return kometa_config_embed, incomplete_message
 
-    async def send_config_content(self, ctx, linked_message_author, config_content, attachment):
+    async def send_config_content(self, ctx, linked_message_author, config_content, attachment, source_filename=None):
         if config_content:
             # Convert BytesIO to string for manipulation
             config_content_str = config_content.getvalue().decode('utf-8')
@@ -2924,19 +2925,29 @@ class RedBotCogLogscan(commands.Cog):
                 config_content_str = schema_url_line + "\n" + added_by_bot_line + "\n" + config_content_str
 
             # Send the updated content as a file
-            parsed_filename = self.build_parsed_config_filename(attachment, linked_message_author)
+            parsed_filename = self.build_parsed_config_filename(
+                attachment,
+                linked_message_author,
+                source_filename=source_filename,
+            )
             await ctx.send(file=discord.File(io.BytesIO(config_content_str.encode("utf-8")),
                                              filename=parsed_filename))
         else:
             mylogger.info("Config content is empty or invalid.")
-            await ctx.response.send_message(
-                "💥An error occurred while processing the attachment. Config content is empty or invalid.💥",
-                ephemeral=True)
+            await ctx.send("💥An error occurred while processing the attachment. Config content is empty or invalid.💥")
 
-    async def send_tracked_attachment_copy(self, ctx, linked_message_author, attachment):
-        tracked_filename = self.build_attachment_tracking_name(attachment, linked_message_author)
+    async def send_tracked_attachment_copy(self, ctx, linked_message_author, attachment, source_filename=None):
+        tracked_filename = self.build_attachment_tracking_name(
+            attachment,
+            linked_message_author,
+            source_filename=source_filename,
+        )
         tracked_file = await attachment.to_file(filename=tracked_filename)
-        provenance_note = self.build_provenance_note(attachment, linked_message_author)
+        provenance_note = self.build_provenance_note(
+            attachment,
+            linked_message_author,
+            source_filename=source_filename,
+        )
         await ctx.send(provenance_note, file=tracked_file)
         return tracked_filename
 
@@ -3152,6 +3163,7 @@ class RedBotCogLogscan(commands.Cog):
 
     def create_people_posters_embed(self, ctx, found_items, not_found_names, not_found_names_with_url):
         target_thread = self.bot.get_channel(target_thread_id)
+        target_thread_ref = target_thread.mention if isinstance(target_thread, discord.Thread) else f"<#{target_thread_id}>"
         # Initialize server_icon_url to None
         server_icon_url = None
 
@@ -3183,13 +3195,13 @@ class RedBotCogLogscan(commands.Cog):
         if not_found_names:
             not_found_names_text = "\n".join(not_found_names)
             not_found_names_text_truncated = truncate_text(not_found_names_text, 4096 - len(embed.description))
-            embed.description += f"❌ **Missing People (No TMDB Image)** ❌\n\nThese are people found in the attached log we do not have a pre-made poster for and we cannot detect a TMDB image to use as a source for creating a poster. If you could go and add proper images to TMDb for these people, we can then proceed to create the styled posters:\n\n{not_found_names_text_truncated}\n✉️ **People Poster request sent on your behalf to: <#{target_thread.id}>** ✉️\n\n"
+            embed.description += f"❌ **Missing People (No TMDB Image)** ❌\n\nThese are people found in the attached log we do not have a pre-made poster for and we cannot detect a TMDB image to use as a source for creating a poster. If you could go and add proper images to TMDb for these people, we can then proceed to create the styled posters:\n\n{not_found_names_text_truncated}\n✉️ **People Poster request sent on your behalf to: {target_thread_ref}** ✉️\n\n"
 
         if not_found_names_with_url:
             not_found_names_with_url_text = "\n".join(not_found_names_with_url)
             not_found_names_with_url_text_truncated = truncate_text(not_found_names_with_url_text,
                                                                     4096 - len(embed.description))
-            embed.description += f"❌ **Missing People (With TMDB Image)** ❌\n\nThese are people found in the attached log that we do not yet have a pre-made poster for, but we were able to detect a source image on TMDb to use for creating a poster:\n\n{not_found_names_with_url_text_truncated}\n✉️ **People Poster request sent on your behalf to: <#{target_thread.id}>** ✉️\n\n"
+            embed.description += f"❌ **Missing People (With TMDB Image)** ❌\n\nThese are people found in the attached log that we do not yet have a pre-made poster for, but we were able to detect a source image on TMDb to use for creating a poster:\n\n{not_found_names_with_url_text_truncated}\n✉️ **People Poster request sent on your behalf to: {target_thread_ref}** ✉️\n\n"
 
         # Truncate the final description to fit the character limit
         embed.description = truncate_text(embed.description, 4096)
@@ -3199,6 +3211,7 @@ class RedBotCogLogscan(commands.Cog):
     async def send_to_masters(self, ctx, target_masters_thread_id, sohjiro_id, msg_txt):
         target_channel = self.bot.get_channel(target_masters_thread_id)
         specific_user = ctx.author  # Use ctx.author as the specific user
+        target_channel_ref = target_channel.mention if isinstance(target_channel, discord.abc.GuildChannel) else f"<#{target_masters_thread_id}>"
         mylogger.info(f"target_channel: {target_channel}")
 
         if isinstance(target_channel, discord.abc.GuildChannel) and specific_user:
@@ -3223,11 +3236,12 @@ class RedBotCogLogscan(commands.Cog):
             if response:
                 await ctx.send("\n".join(response))
                 await ctx.send(
-                    f"❌ **Failure to send to: <#{target_channel.id}> contact `@Support` directly about this failure** ❌")
+                    f"❌ **Failure to send to: {target_channel_ref} contact `@Support` directly about this failure** ❌")
 
     async def send_people_poster_request(self, ctx, target_thread_id, specific_user_id):
         target_thread = self.bot.get_channel(target_thread_id)
         specific_user = ctx.author  # Use ctx.author as the specific user
+        target_thread_ref = target_thread.mention if isinstance(target_thread, discord.Thread) else f"<#{target_thread_id}>"
 
         if isinstance(target_thread, discord.Thread) and specific_user:
             sender_mention = f"Sender: {ctx.author.mention}\nA request for a people poster was made."
@@ -3249,7 +3263,7 @@ class RedBotCogLogscan(commands.Cog):
             if response:
                 await ctx.send("\n".join(response))
                 await ctx.send(
-                    f"❌ **Failure to send to: <#{target_thread.id}> contact `@Support` directly about this failure** ❌")
+                    f"❌ **Failure to send to: {target_thread_ref} contact `@Support` directly about this failure** ❌")
 
     def generate_random_string(self, length):
         """
@@ -3262,6 +3276,16 @@ class RedBotCogLogscan(commands.Cog):
         cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", (value or "").strip().lower())
         cleaned = cleaned.strip("._-")
         return cleaned or fallback
+
+    def get_source_display_name(self, source_author):
+        if isinstance(source_author, str):
+            return source_author
+        return getattr(source_author, "display_name", None) or getattr(source_author, "name", None) or "user"
+
+    def get_source_identity_key(self, source_author):
+        if isinstance(source_author, str):
+            return source_author
+        return getattr(source_author, "id", 0) or self.get_source_display_name(source_author)
 
     def split_filename(self, filename):
         if filename.lower().endswith(".tar.gz"):
@@ -3288,6 +3312,26 @@ class RedBotCogLogscan(commands.Cog):
             return None
         return f"{components['base']}_{components['author']}_{components['suffix']}"
 
+    def resolve_attachment_provenance(self, message_author, message_content, attachment):
+        source_author = message_author
+        source_filename = attachment.filename
+
+        if message_content:
+            uploader_match = re.search(r"^Original uploader:\s*(.+)$", message_content, re.MULTILINE)
+            filename_match = re.search(r"^Original filename:\s*(.+)$", message_content, re.MULTILINE)
+
+            if uploader_match:
+                uploader_name = uploader_match.group(1).strip()
+                if uploader_name:
+                    source_author = SimpleNamespace(display_name=uploader_name, name=uploader_name, id=0)
+
+            if filename_match:
+                original_filename = filename_match.group(1).strip()
+                if original_filename:
+                    source_filename = original_filename
+
+        return source_author, source_filename
+
     def build_tracked_filename(self, filename, source_author, unique_seed):
         existing_tracking_stem = self.extract_existing_tracking_stem(filename)
         if existing_tracking_stem:
@@ -3295,31 +3339,32 @@ class RedBotCogLogscan(commands.Cog):
             return f"{existing_tracking_stem}{extension}"
 
         base_name, extension = self.split_filename(os.path.basename(filename))
-        author_name = getattr(source_author, "display_name", None) or getattr(source_author, "name", None) or "user"
-        author_part = self.sanitize_filename_part(author_name, "user")
+        author_part = self.sanitize_filename_part(self.get_source_display_name(source_author), "user")
         base_part = self.sanitize_filename_part(base_name or "attachment", "attachment")
         unique_part = uuid.uuid5(
             uuid.NAMESPACE_URL,
-            f"{getattr(source_author, 'id', 0)}:{unique_seed}",
+            f"{self.get_source_identity_key(source_author)}:{unique_seed}",
         ).hex[:8]
         return f"{base_part}_{author_part}_{unique_part}{extension}"
 
-    def build_attachment_tracking_name(self, attachment, source_author):
+    def build_attachment_tracking_name(self, attachment, source_author, source_filename=None):
+        filename = source_filename or attachment.filename
         return self.build_tracked_filename(
-            attachment.filename,
+            filename,
             source_author,
-            f"{getattr(attachment, 'id', 0)}:{attachment.filename}",
+            f"{getattr(attachment, 'id', 0)}:{filename}",
         )
 
-    def build_parsed_config_filename(self, attachment, source_author):
-        existing_components = self.parse_tracking_components(attachment.filename)
+    def build_parsed_config_filename(self, attachment, source_author, source_filename=None):
+        filename = source_filename or attachment.filename
+        existing_components = self.parse_tracking_components(filename)
         if existing_components:
             return (
                 f"{existing_components['base']}_config_"
                 f"{existing_components['author']}_{existing_components['suffix']}.yml"
             )
 
-        tracked_filename = self.build_attachment_tracking_name(attachment, source_author)
+        tracked_filename = self.build_attachment_tracking_name(attachment, source_author, source_filename=filename)
         tracked_components = self.parse_tracking_components(tracked_filename)
         if tracked_components:
             return (
@@ -3330,9 +3375,9 @@ class RedBotCogLogscan(commands.Cog):
         tracked_base_name, _ = self.split_filename(tracked_filename)
         return f"{tracked_base_name}_config.yml"
 
-    def build_provenance_note(self, attachment, source_author):
-        original_uploader = getattr(source_author, "display_name", None) or getattr(source_author, "name", None) or "Unknown"
-        original_filename = attachment.filename
+    def build_provenance_note(self, attachment, source_author, source_filename=None):
+        original_uploader = self.get_source_display_name(source_author) or "Unknown"
+        original_filename = source_filename or attachment.filename
         return (
             f"Tracked copy for download.\n"
             f"Original uploader: {original_uploader}\n"
@@ -3535,7 +3580,7 @@ class RedBotCogLogscan(commands.Cog):
 
         return extracted_files
 
-    async def handle_compressed_file(self, ctx, attachment, source_author=None):
+    async def handle_compressed_file(self, ctx, attachment, source_author=None, source_filename=None):
         extension = detect_archive_type(attachment.filename)
         message_id = ctx.message.id
         source_author = source_author or getattr(ctx, "author", None)
@@ -3546,7 +3591,11 @@ class RedBotCogLogscan(commands.Cog):
             temp_dir = self.create_unique_temp_dir(message_id)
             os.makedirs(temp_dir, exist_ok=True)
 
-            local_filename = self.build_attachment_tracking_name(attachment, source_author)
+            local_filename = self.build_attachment_tracking_name(
+                attachment,
+                source_author,
+                source_filename=source_filename,
+            )
             compressed_path = os.path.join(temp_dir, local_filename)
 
             try:
@@ -3631,6 +3680,7 @@ class RedBotCogLogscan(commands.Cog):
         content,
         content_bytes,
         *,
+        source_filename=None,
         delete_source_message=False,
         source_message=None,
     ):
@@ -3659,7 +3709,12 @@ class RedBotCogLogscan(commands.Cog):
         # mylogger.info(f"Summary Lines: {summary_lines}")
 
         # Call the create_user_info_embed method
-        tracked_filename = await self.send_tracked_attachment_copy(ctx, linked_message_author, attachment)
+        tracked_filename = await self.send_tracked_attachment_copy(
+            ctx,
+            linked_message_author,
+            attachment,
+            source_filename=source_filename,
+        )
         user_info_embed = self.create_user_info_embed(
             linked_message_author,
             invoker,
@@ -3879,7 +3934,13 @@ class RedBotCogLogscan(commands.Cog):
 
                 if str(reaction.emoji) == "✅":
                     # User wants to extract the .yml file
-                    await self.send_config_content(ctx, linked_message_author, config_content, attachment)
+                    await self.send_config_content(
+                        ctx,
+                        linked_message_author,
+                        config_content,
+                        attachment,
+                        source_filename=source_filename,
+                    )
                     await prompt_message.delete()
                 else:
                     # User doesn't want to extract the .yml file
@@ -3969,12 +4030,22 @@ class RedBotCogLogscan(commands.Cog):
                 try:
                     linked_message = message_link
                     attachment = linked_message.attachments[0]
+                    resolved_author, resolved_filename = self.resolve_attachment_provenance(
+                        linked_message.author,
+                        linked_message.content,
+                        attachment,
+                    )
                     extension = detect_archive_type(attachment.filename)
 
                     if extension in SUPPORTED_COMPRESSED_FORMATS:
                         mylogger.info(
                             f"SLASH-Compressed file detected. Sending {attachment.filename} to handle_compressed_file")
-                        extracted_files = await self.handle_compressed_file(ctx, attachment, linked_message.author)
+                        extracted_files = await self.handle_compressed_file(
+                            ctx,
+                            attachment,
+                            resolved_author,
+                            source_filename=resolved_filename,
+                        )
 
                         # Process each extracted file
                         for extracted_file in extracted_files:
@@ -3990,11 +4061,12 @@ class RedBotCogLogscan(commands.Cog):
                                         # Rest of the processing code when "✅" is clicked
                                         await self.process_attachment(
                                             ctx,
-                                            linked_message.author,
+                                            resolved_author,
                                             ctx.author,
                                             attachment,
                                             content,
                                             content_bytes,
+                                            source_filename=resolved_filename,
                                         )
                                 else:
                                     if bad_channel:
@@ -4022,11 +4094,12 @@ class RedBotCogLogscan(commands.Cog):
                             if decision == "✅":
                                 await self.process_attachment(
                                     ctx,
-                                    linked_message.author,
+                                    resolved_author,
                                     ctx.author,
                                     attachment,
                                     content,
                                     content_bytes,
+                                    source_filename=resolved_filename,
                                 )
                         else:
                             if bad_channel:
@@ -4137,11 +4210,21 @@ class RedBotCogLogscan(commands.Cog):
 
         if message.attachments:
             for attachment in message.attachments:
+                resolved_author, resolved_filename = self.resolve_attachment_provenance(
+                    message.author,
+                    message.content,
+                    attachment,
+                )
                 extension = detect_archive_type(attachment.filename)
 
                 if extension in SUPPORTED_COMPRESSED_FORMATS:
                     mylogger.info(f"Compressed file detected. Sending {attachment.filename} to handle_compressed_file")
-                    extracted_files = await self.handle_compressed_file(ctx, attachment, user)
+                    extracted_files = await self.handle_compressed_file(
+                        ctx,
+                        attachment,
+                        resolved_author,
+                        source_filename=resolved_filename,
+                    )
 
                     # Process each extracted file
                     for extracted_file in extracted_files:
@@ -4157,11 +4240,12 @@ class RedBotCogLogscan(commands.Cog):
                                     # Rest of the processing code when "✅" is clicked
                                     await self.process_attachment(
                                         ctx,
-                                        user,
+                                        resolved_author,
                                         invoker,
                                         attachment,
                                         content,
                                         content_bytes,
+                                        source_filename=resolved_filename,
                                         delete_source_message=True,
                                         source_message=message,
                                     )
@@ -4193,11 +4277,12 @@ class RedBotCogLogscan(commands.Cog):
                             # Rest of the processing code when "✅" is clicked
                             await self.process_attachment(
                                 ctx,
-                                user,
+                                resolved_author,
                                 invoker,
                                 attachment,
                                 content,
                                 content_bytes,
+                                source_filename=resolved_filename,
                                 delete_source_message=True,
                                 source_message=message,
                             )
