@@ -2724,8 +2724,13 @@ class RedBotCogLogscan(commands.Cog):
         )
 
         # Set the thumbnail to the author's avatar if available
-        user_avatar_url = user.avatar.url if user.avatar else user.default_avatar.url
-        user_info_embed.set_thumbnail(url=user_avatar_url)
+        user_avatar = getattr(user, "display_avatar", None) or getattr(user, "avatar", None)
+        user_avatar_url = getattr(user_avatar, "url", None)
+        if not user_avatar_url:
+            default_avatar = getattr(user, "default_avatar", None)
+            user_avatar_url = getattr(default_avatar, "url", None)
+        if user_avatar_url:
+            user_info_embed.set_thumbnail(url=user_avatar_url)
 
         return user_info_embed
 
