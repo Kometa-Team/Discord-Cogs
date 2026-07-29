@@ -2,25 +2,116 @@ import re
 import discord
 import logging
 import io
-import os
 import asyncio
+import secrets
+import time
+from dataclasses import dataclass, field
 from redbot.core import commands, app_commands
 
 # Global error and start messages
-START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information.\n\nIf you feel this message should not have been redacted, resend it with `!noredact` in your message to avoid redaction."
-FORBIDDEN_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information."
-NO_REDACT_COMMAND = "!noredact"
+START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information."
+REDACTION_REVIEW_TTL_SECONDS = 15 * 60
 # List of role IDs that should skip redaction
 IGNORED_ROLE_IDS = [
-    823677075751043102,
-    1187017579013873665,
-    929756550380286153,
-    929900016531828797,
+    9823677075751043102,
+    91187017579013873665,
+    9929756550380286153,
+    9929900016531828797,
 ]
 
 # Create logger
 mylogger = logging.getLogger('redactor')
 mylogger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
+
+
+@dataclass
+class StoredAttachment:
+    filename: str
+    data: bytes
+    content_type: str = ""
+
+    def to_file(self):
+        return discord.File(io.BytesIO(self.data), filename=self.filename)
+
+
+@dataclass
+class PendingRedaction:
+    author_id: int
+    channel_id: int
+    created_at: float
+    content: str
+    attachments: list = field(default_factory=list)
+    findings: list = field(default_factory=list)
+    redacted_message_ids: list = field(default_factory=list)
+    notice_message_id: int = None
+
+    def is_expired(self):
+        return time.time() - self.created_at > REDACTION_REVIEW_TTL_SECONDS
+
+
+class RedactionConfirmRestoreView(discord.ui.View):
+    def __init__(self, cog: "RedBotCog", review_id: str, author_id: int):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.review_id = review_id
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if await self.cog.can_manage_redaction_review(interaction, self.author_id):
+            return True
+        await interaction.response.send_message("Only the original author or staff can use this review.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Confirm Restore", style=discord.ButtonStyle.danger)
+    async def confirm_restore(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.restore_redaction_review(interaction, self.review_id)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_restore(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Restore cancelled. The redacted copy remains posted.", view=None)
+
+
+class RedactionReviewView(discord.ui.View):
+    def __init__(self, cog: "RedBotCog", review_id: str, author_id: int):
+        super().__init__(timeout=REDACTION_REVIEW_TTL_SECONDS)
+        self.cog = cog
+        self.review_id = review_id
+        self.author_id = author_id
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if await self.cog.can_manage_redaction_review(interaction, self.author_id):
+            return True
+        await interaction.response.send_message("Only the original author or staff can use this review.", ephemeral=True)
+        return False
+
+    async def on_timeout(self):
+        await self.cog.expire_redaction_review(self.review_id)
+        for child in self.children:
+            child.disabled = True
+
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="Show Findings", style=discord.ButtonStyle.secondary)
+    async def show_findings(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.show_redaction_findings(interaction, self.review_id)
+
+    @discord.ui.button(label="Keep Redacted", style=discord.ButtonStyle.success)
+    async def keep_redacted(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.keep_redaction_review(interaction, self.review_id)
+
+    @discord.ui.button(label="Restore Original", style=discord.ButtonStyle.danger)
+    async def restore_original(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = RedactionConfirmRestoreView(self.cog, self.review_id, self.author_id)
+        await interaction.response.send_message(
+            "This will repost the original unredacted content and attachments to the thread. Confirm only if you are sure no secrets will be exposed.",
+            ephemeral=True,
+            view=view,
+        )
 
 
 class RedBotCog(commands.Cog):
@@ -30,8 +121,9 @@ class RedBotCog(commands.Cog):
         self.bot = bot
         self.bot_name = bot.user.name
         self.bot_uid = bot.user.id
-        self.regex_pattern = r"(token|client.*|(?<!\w)url:|url: (?:http|https)|api_*key|(?<!\w)secret:|(?<!\w)error:|run_start|run_end|changes|username|password|localhost_url|\"tvdbapi\"|\"tmdbtoken\"|\"plextoken\"|\"fanarttvapikey\"): .+"
+        self.regex_pattern = r"(token|client.*|(?<!\w)url:|url: (?:http|https)|api_*key|(?<!\w)secret:|run_start|run_end|changes|username|password|localhost_url|\"tvdbapi\"|\"tmdbtoken\"|\"plextoken\"|\"fanarttvapikey\"): .+"
         self.processed_message_ids = set()
+        self.pending_redactions = {}
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -58,30 +150,14 @@ class RedBotCog(commands.Cog):
                 author_name = f"{message.author.name}#{message.author.discriminator}" if message.author else "Unknown"
                 guild_name = message.guild.name if message.guild else "Direct Message"
                 channel_name = message.channel.name if isinstance(message.channel, discord.TextChannel) else "Direct Message"
-        
+
                 mylogger.info(f"Redactor invoked by {author_name} in {guild_name}/{channel_name} (ID: {message.guild.id if message.guild else 'N/A'}/{message.channel.id if message.guild else 'N/A'})")
-        
+
                 # mylogger.info(f"Received message (ID: {message.id}) from {message.author.name} in #{message.channel.name}")
 
                 # Skip processing if user has an ignored role
                 if any(role.id in IGNORED_ROLE_IDS for role in message.author.roles):
                     mylogger.info(f"Skipping redaction for {message.author.name} due to ignored role.")
-                    return
-
-                if message.content.strip() == NO_REDACT_COMMAND:
-                    return
-
-                if NO_REDACT_COMMAND in message.content:
-                    mylogger.info(f"!noredact detected by {message.author.name}")
-                    embed = discord.Embed(
-                        title="💥REDACTION Override Detected!💥",
-                        description=(
-                            f"**💥Redaction Override Detected!💥** ↑↑↑ {message.author.mention}, I hope you know what you are doing?!?\n\n"
-                            f"*This message will self-destruct in 30 seconds...*"
-                        ),
-                        color=discord.Color.blurple()
-                    )
-                    await message.channel.send(embed=embed, delete_after=30)  # Set delete_after as needed
                     return
 
                 # Check if the message is in a thread (is a thread or a reply in a thread)
@@ -155,268 +231,372 @@ class RedBotCog(commands.Cog):
         else:
             return "No Text or Attachments"
 
+    async def send_replacement_message(self, channel, content=None, files=None):
+        files = files or []
+        normalized_content = content if content else None
+        sent_messages = []
+
+        if not files:
+            if normalized_content is not None:
+                sent_messages.append(
+                    await channel.send(normalized_content, allowed_mentions=discord.AllowedMentions.none())
+                )
+            return sent_messages
+
+        for index in range(0, len(files), 10):
+            batch = files[index:index + 10]
+            batch_content = normalized_content if index == 0 else None
+            sent_messages.append(
+                await channel.send(
+                    content=batch_content,
+                    files=batch,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            )
+
+        return sent_messages
+
+    def is_text_like_attachment(self, attachment):
+        content_type = (attachment.content_type or "").lower()
+        if content_type:
+            return (
+                content_type.startswith('text') or
+                content_type == 'application/octet-stream' or
+                content_type.startswith('application/json') or
+                content_type.startswith('application/xml')
+            )
+
+        extension = attachment.filename.rsplit('.', 1)[-1].lower() if '.' in attachment.filename else ''
+        return extension in {'txt', 'log', 'yml', 'yaml', 'json', 'xml', 'csv'}
+
+    async def snapshot_attachments(self, attachments):
+        snapshots = []
+        for attachment in attachments:
+            snapshots.append(
+                StoredAttachment(
+                    filename=attachment.filename,
+                    data=await attachment.read(),
+                    content_type=attachment.content_type or "",
+                )
+            )
+        return snapshots
+
+    def build_replacement_attachment(self, attachment):
+        if not self.is_text_like_attachment(attachment):
+            return attachment.to_file()
+
+        try:
+            text_data = attachment.data.decode('utf-8')
+        except UnicodeDecodeError:
+            mylogger.warning(f"Failed to decode attachment {attachment.filename} as UTF-8; reposting unchanged.")
+            return attachment.to_file()
+
+        redacted_text = self.redact_sensitive_info(text_data, self.bot_name)
+        if redacted_text != text_data:
+            return discord.File(io.BytesIO(redacted_text.encode('utf-8')), filename=attachment.filename)
+
+        return attachment.to_file()
+
+    def build_replacement_attachments(self, attachments):
+        replacement_attachments = []
+        for attachment in attachments:
+            replacement_attachments.append(self.build_replacement_attachment(attachment))
+        return replacement_attachments
+
+    async def replace_redacted_message(self, message, content=None, files=None, original_attachments=None, findings=None):
+        self.cleanup_expired_redactions()
+        await message.delete()
+        sent_messages = await self.send_replacement_message(message.channel, content=content, files=files)
+
+        review_id = secrets.token_urlsafe(16)
+        pending = PendingRedaction(
+            author_id=message.author.id,
+            channel_id=message.channel.id,
+            created_at=time.time(),
+            content=message.content,
+            attachments=original_attachments or [],
+            findings=findings or [],
+            redacted_message_ids=[sent_message.id for sent_message in sent_messages],
+        )
+        self.pending_redactions[review_id] = pending
+
+        view = RedactionReviewView(self, review_id, message.author.id)
+        notice = await message.channel.send(
+            content=message.author.mention,
+            embed=self.build_redaction_review_embed(pending),
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+        view.message = notice
+        pending.notice_message_id = notice.id
+        await self.try_send_redaction_dm(message.author, pending)
+
+    def cleanup_expired_redactions(self):
+        expired_review_ids = [
+            review_id
+            for review_id, pending in self.pending_redactions.items()
+            if pending.is_expired()
+        ]
+        for review_id in expired_review_ids:
+            self.pending_redactions.pop(review_id, None)
+
+    async def can_manage_redaction_review(self, interaction, author_id):
+        if interaction.user.id == author_id:
+            return True
+
+        member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        return bool(member and any(role.id in IGNORED_ROLE_IDS for role in member.roles))
+
+    def get_pending_redaction(self, review_id):
+        pending = self.pending_redactions.get(review_id)
+        if not pending:
+            return None
+
+        if pending.is_expired():
+            self.pending_redactions.pop(review_id, None)
+            return None
+
+        return pending
+
+    def format_redaction_findings(self, pending, limit=20):
+        if not pending.findings:
+            return "No line-level details were available. The message still matched the redaction rules."
+
+        visible_findings = pending.findings[:limit]
+        lines = [f"- {finding}" for finding in visible_findings]
+        remaining = len(pending.findings) - len(visible_findings)
+        if remaining:
+            lines.append(f"- {remaining} additional finding(s) hidden for length.")
+        return "\n".join(lines)
+
+    def build_redaction_review_embed(self, pending):
+        embed = discord.Embed(
+            title="Redaction Review",
+            description=(
+                "I removed the original message because it matched the secret redaction rules and posted a redacted copy.\n\n"
+                f"The original content is held in memory for {REDACTION_REVIEW_TTL_SECONDS // 60} minutes. "
+                "Use the buttons below to inspect the sanitized findings, keep the redacted copy, or restore the original."
+            ),
+            color=discord.Color.orange(),
+        )
+        embed.add_field(name="Findings", value=self.format_redaction_findings(pending, limit=5)[:1024], inline=False)
+        return embed
+
+    async def try_send_redaction_dm(self, author, pending):
+        try:
+            embed = discord.Embed(
+                title="Redaction Review",
+                description=(
+                    "Your message was redacted in the server because it matched the secret redaction rules. "
+                    "Use the review buttons in the thread to keep the redacted copy or restore the original."
+                ),
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="Findings", value=self.format_redaction_findings(pending, limit=10)[:1024], inline=False)
+            await author.send(embed=embed)
+        except discord.Forbidden:
+            mylogger.info(f"Could not DM redaction review to {author}.")
+        except discord.HTTPException as e:
+            mylogger.warning(f"Failed to DM redaction review to {author}: {e}")
+
+    async def show_redaction_findings(self, interaction, review_id):
+        pending = self.get_pending_redaction(review_id)
+        if not pending:
+            await interaction.response.send_message("This redaction review has expired.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(self.format_redaction_findings(pending), ephemeral=True)
+
+    async def keep_redaction_review(self, interaction, review_id):
+        pending = self.get_pending_redaction(review_id)
+        if not pending:
+            await interaction.response.send_message("This redaction review has already expired or closed.", ephemeral=True)
+            return
+
+        self.pending_redactions.pop(review_id, None)
+        embed = discord.Embed(
+            title="Redaction Review Closed",
+            description="The redacted copy was kept and the temporary original was discarded.",
+            color=discord.Color.green(),
+        )
+        await interaction.response.edit_message(content=None, embed=embed, view=None)
+
+    async def expire_redaction_review(self, review_id):
+        self.pending_redactions.pop(review_id, None)
+
+    async def delete_redacted_messages(self, pending, channel):
+        for message_id in pending.redacted_message_ids:
+            try:
+                redacted_message = await channel.fetch_message(message_id)
+                await redacted_message.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+    async def update_redaction_notice(self, pending, channel, embed):
+        if not pending.notice_message_id:
+            return
+
+        try:
+            notice = await channel.fetch_message(pending.notice_message_id)
+            await notice.edit(content=None, embed=embed, view=None)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    async def restore_redaction_review(self, interaction, review_id):
+        pending = self.get_pending_redaction(review_id)
+        if not pending:
+            await interaction.response.send_message("This redaction review has expired.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        channel = self.bot.get_channel(pending.channel_id) or interaction.channel
+        restored_files = [attachment.to_file() for attachment in pending.attachments]
+        await self.send_replacement_message(channel, content=pending.content, files=restored_files)
+        await self.delete_redacted_messages(pending, channel)
+        self.pending_redactions.pop(review_id, None)
+
+        embed = discord.Embed(
+            title="Original Restored",
+            description="The original content was reposted by request and the temporary copy was discarded.",
+            color=discord.Color.red(),
+        )
+        await self.update_redaction_notice(pending, channel, embed)
+        await interaction.followup.send("Original restored. The temporary stored copy has been discarded.", ephemeral=True)
+
     async def process_text_only_sensitive(self, message):
         try:
             redacted_content = self.redact_sensitive_info(message.content, self.bot_name)
+            start_message = START_MESSAGE.format(mention=message.author.mention, bot_name=self.bot_name)
+            findings = self.build_redaction_findings(message.content, [])
 
             # Check if the redacted content exceeds Discord's character limit
             if len(redacted_content) > 1000:
-                # Create a text file with the redacted content
-                redacted_filename = f"redacted_message_{message.author.name}.txt"
-                with open(redacted_filename, "w", encoding="utf-8") as file:
-                    file.write(redacted_content)
-
-                # Send a message notifying the user and attach the redacted text file
-                await message.channel.send(
-                    f"{START_MESSAGE.format(mention=message.author.mention, bot_name=self.bot_name)} "
-                    f"See attached file for redacted content.",
-                    file=discord.File(redacted_filename)
+                redacted_file = discord.File(
+                    io.BytesIO(redacted_content.encode("utf-8")),
+                    filename=f"redacted_message_{message.author.name}.txt",
                 )
-
-                try:
-                    # Send a direct message to the user with a link to the redacted message
-                    error_message = self.generate_error_message(message.author.name, self.bot_name, message.jump_url)
-                    await message.author.send(error_message)
-
-                except discord.errors.Forbidden:
-                    # If sending a direct message is forbidden, inform the user in the server channel
-                    await message.channel.send(
-                        FORBIDDEN_MESSAGE.format(mention=message.author.mention, bot_name=self.bot_name))
-
-                finally:
-                    # Remove the temporary redacted text file
-                    os.remove(redacted_filename)
+                await self.replace_redacted_message(
+                    message,
+                    content=f"{start_message} See attached file for redacted content.",
+                    files=[redacted_file],
+                    findings=findings,
+                )
             else:
                 # If the redacted content is within Discord's character limit, send it as a regular message
-                await message.channel.send(START_MESSAGE.format(mention=message.author.mention, bot_name=self.bot_name))
-                await message.channel.send(redacted_content)
-
-                try:
-                    # Send a direct message to the user with a link to the redacted message
-                    error_message = self.generate_error_message(message.author.name, self.bot_name, message.jump_url)
-                    await message.author.send(error_message)
-
-                except discord.errors.Forbidden:
-                    # If sending a direct message is forbidden, inform the user in the server channel
-                    await message.channel.send(
-                        FORBIDDEN_MESSAGE.format(mention=message.author.mention, bot_name=self.bot_name))
+                await self.replace_redacted_message(
+                    message,
+                    content=f"{start_message}\n\n{redacted_content}",
+                    findings=findings,
+                )
 
         except Exception as e:
             # Log the exception (you can customize this part based on your logging setup)
             mylogger.exception('An error occurred in process_text_only_sensitive:', exc_info=e)
 
-        finally:
-            # Delete the original message (outside the try-except block)
-            await message.delete()
-
     async def process_attachments_only_sensitive(self, message):
-        # Redact sensitive attachments, send private message to user, and send redacted attachments
-        redacted_attachments = []
-
-        for att in message.attachments:
-            if att.content_type:
-                if (att.content_type.startswith('text') or
-                        att.content_type == 'application/octet-stream' or
-                        att.content_type.startswith('application/json') or
-                        att.content_type.startswith('application/xml')):
-
-                    att_content = await att.read()
-                    try:
-                        text_data = att_content.decode('utf-8')  # Decode the bytes to text
-                    except UnicodeDecodeError:
-                        # Handle the case where the attachment is not text
-                        await message.delete()
-                        await message.channel.send(
-                            f"Sorry {message.author.mention}, for your own safety, please attach a file with a proper extension.")
-                        continue
-
-                    redacted_text = self.redact_sensitive_info(text_data, self.bot_name)
-
-                    if redacted_text != text_data:
-                        # Create a new attachment with the redacted content
-                        redacted_attachment = discord.File(io.BytesIO(redacted_text.encode('utf-8')),
-                                                           filename=att.filename)
-                        redacted_attachments.append(redacted_attachment)
-                    else:
-                        # Send the original attachment if no redaction needed
-                        att_file = discord.File(io.BytesIO(att_content), filename=att.filename)
-                        await message.channel.send(file=att_file)
-                else:
-                    # Handle unsupported content types
-                    att_file = discord.File(io.BytesIO(await att.read()), filename=att.filename)
-                    await message.channel.send(file=att_file)
-            else:
-                # Treat attachment with content_type=None as text
-                att_content = await att.read()
-                try:
-                    text_data = att_content.decode('utf-8')  # Decode the bytes to text
-                except UnicodeDecodeError:
-                    # If decoding fails, delete the message and inform the user
-                    await message.delete()
-                    await message.channel.send(
-                        f"Sorry {message.author.mention}, for your own safety, please attach a file with a proper extension.")
-                    continue
-
-                redacted_text = self.redact_sensitive_info(text_data, self.bot_name)
-
-                if redacted_text != text_data:
-                    redacted_attachment = discord.File(io.BytesIO(redacted_text.encode('utf-8')),
-                                                       filename=att.filename)
-                    redacted_attachments.append(redacted_attachment)
-                else:
-                    att_file = discord.File(io.BytesIO(att_content), filename=att.filename)
-                    await message.channel.send(file=att_file)
-
-        try:
-            # Send the redacted attachments back to the channel
-            for redacted_attachment in redacted_attachments:
-                await message.channel.send(file=redacted_attachment)
-
-            # Send a private message to the user with a link to the redacted message
-            error_message = self.generate_error_message(message.author.name, self.bot_name, message.jump_url)
-            await message.author.send(error_message)
-
-        except discord.errors.Forbidden:
-            # Inform the server channel if sending a direct message is forbidden
-            await message.channel.send(FORBIDDEN_MESSAGE.format(mention=message.author.mention, bot_name=self.bot_name))
-
-        # Delete the original message containing sensitive attachments (if not already deleted)
-        await message.delete()
+        original_attachments = await self.snapshot_attachments(message.attachments)
+        replacement_attachments = self.build_replacement_attachments(original_attachments)
+        findings = self.build_redaction_findings(message.content, original_attachments)
+        await self.replace_redacted_message(
+            message,
+            files=replacement_attachments,
+            original_attachments=original_attachments,
+            findings=findings,
+        )
 
     async def process_text_and_attachments_text_sensitive(self, message):
-        # Redact sensitive text, delete original, send private message to user, and send redacted text and attachments
         redacted_content = self.redact_sensitive_info(message.content, self.bot_name)
-
-        try:
-            # Send a private message to the user with a link to the redacted message
-            error_message = self.generate_error_message(message.author.name, self.bot_name, message.jump_url)
-            await message.author.send(error_message)
-
-        except discord.errors.Forbidden:
-            # If sending a direct message is forbidden, inform the user in the server channel
-            await message.channel.send(FORBIDDEN_MESSAGE.format(mention=message.author.mention, bot_name=self.bot_name))
-
-        # Send the redacted text in the same channel
-        await message.channel.send(redacted_content)
-
-        for att in message.attachments:
-            # Read the attachment's binary data
-            att_content = await att.read()
-
-            # Create a discord.File object with the attachment's data
-            att_file = discord.File(io.BytesIO(att_content), filename=att.filename)
-
-            # Send the attachment as a file
-            await message.channel.send(file=att_file)
-
-        # Delete the original message
-        await message.delete()
+        original_attachments = await self.snapshot_attachments(message.attachments)
+        replacement_attachments = self.build_replacement_attachments(original_attachments)
+        findings = self.build_redaction_findings(message.content, original_attachments)
+        await self.replace_redacted_message(
+            message,
+            content=redacted_content,
+            files=replacement_attachments,
+            original_attachments=original_attachments,
+            findings=findings,
+        )
 
     async def process_text_and_attachments_both_sensitive(self, message):
-        # Redact both sensitive text and sensitive attachments, delete original, send private message to user,
-        # and send redacted text and redacted attachments
-
-        # Redact the sensitive text in the message content
         redacted_content = self.redact_sensitive_info(message.content, self.bot_name)
-
-        # Redact sensitive attachments
-        redacted_attachments = []
-
-        for att in message.attachments:
-            if att.content_type.startswith('text') or att.content_type == 'application/octet-stream'  or att.content_type.startswith('application/json') or att.content_type.startswith('application/xml'):
-                att_content = await att.read()
-                text_data = att_content.decode('utf-8')  # Decode the bytes to text
-                redacted_text = self.redact_sensitive_info(text_data, self.bot_name)
-
-                # If sensitive information was found and redacted in the text attachment, create a new attachment
-                if redacted_text != text_data:
-                    redacted_attachment = discord.File(io.BytesIO(redacted_text.encode('utf-8')), filename=att.filename)
-                    redacted_attachments.append(redacted_attachment)
-                else:
-                    att_file = discord.File(io.BytesIO(att_content), filename=att.filename)
-                    await message.channel.send(file=att_file)
-            else:
-                att_content = await att.read()
-                att_file = discord.File(io.BytesIO(att_content), filename=att.filename)
-                await message.channel.send(file=att_file)
-
-        try:
-            # Send a private message to the user with a link to the redacted message
-            error_message = self.generate_error_message(message.author.name, self.bot_name, message.jump_url)
-            await message.author.send(error_message)
-
-        except discord.errors.Forbidden:
-            # If sending a direct message is forbidden, inform the user in the server channel
-            await message.channel.send(FORBIDDEN_MESSAGE.format(mention=message.author.mention, bot_name=self.bot_name))
-
-        # Send the redacted text in the same channel
-        await message.channel.send(redacted_content)
-
-        # Send the redacted attachments in the same channel
-        for redacted_attachment in redacted_attachments:
-            await message.channel.send(file=redacted_attachment)
-
-        # Delete the original message
-        await message.delete()
+        original_attachments = await self.snapshot_attachments(message.attachments)
+        replacement_attachments = self.build_replacement_attachments(original_attachments)
+        findings = self.build_redaction_findings(message.content, original_attachments)
+        await self.replace_redacted_message(
+            message,
+            content=redacted_content,
+            files=replacement_attachments,
+            original_attachments=original_attachments,
+            findings=findings,
+        )
 
     async def process_text_and_attachments_attachments_sensitive(self, message):
-        # Redact sensitive attachments, delete original, send private message to user, and send redacted attachments
+        original_attachments = await self.snapshot_attachments(message.attachments)
+        replacement_attachments = self.build_replacement_attachments(original_attachments)
+        findings = self.build_redaction_findings(message.content, original_attachments)
+        await self.replace_redacted_message(
+            message,
+            content=message.content,
+            files=replacement_attachments,
+            original_attachments=original_attachments,
+            findings=findings,
+        )
 
-        # Redact sensitive attachments
-        redacted_attachments = []
+    def build_redaction_findings(self, message_content, attachments):
+        findings = []
+        findings.extend(self.find_sensitive_lines(message_content, "message content"))
 
-        for att in message.attachments:
-            if att.content_type.startswith('text') or att.content_type == 'application/octet-stream' or att.content_type.startswith('application/json') or att.content_type.startswith('application/xml'):
-                att_content = await att.read()
-                text_data = att_content.decode('utf-8')  # Decode the bytes to text
-                redacted_text = self.redact_sensitive_info(text_data, self.bot_name)
+        for attachment in attachments:
+            if not self.is_text_like_attachment(attachment):
+                continue
 
-                # If sensitive information was found and redacted in the text attachment, create a new attachment
-                if redacted_text != text_data:
-                    redacted_attachment = discord.File(io.BytesIO(redacted_text.encode('utf-8')), filename=att.filename)
-                    redacted_attachments.append(redacted_attachment)
-                else:
-                    att_file = discord.File(io.BytesIO(att_content), filename=att.filename)
-                    await message.channel.send(file=att_file)
-            else:
-                att_content = await att.read()
-                att_file = discord.File(io.BytesIO(att_content), filename=att.filename)
-                await message.channel.send(file=att_file)
+            try:
+                attachment_text = attachment.data.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
 
-        try:
-            # Send a private message to the user with a link to the redacted message
-            error_message = self.generate_error_message(message.author.name, self.bot_name, message.jump_url)
-            await message.author.send(error_message)
+            findings.extend(self.find_sensitive_lines(attachment_text, f"attachment {attachment.filename}"))
 
-        except discord.errors.Forbidden:
-            # If sending a direct message is forbidden, inform the user in the server channel
-            await message.channel.send(FORBIDDEN_MESSAGE.format(mention=message.author.mention, bot_name=self.bot_name))
+        return findings
 
-        # Send the redacted attachments in the same channel
-        for redacted_attachment in redacted_attachments:
-            await message.channel.send(file=redacted_attachment)
+    def find_sensitive_lines(self, text, source):
+        findings = []
+        for line_number, line in enumerate((text or "").split("\n"), start=1):
+            if self.should_skip_sensitive_line(line):
+                continue
 
-        # Recreate the message.content as it was non-sensitive
-        await message.channel.send(message.content)
+            if self.redact_sensitive_info(line, self.bot_name) == line:
+                continue
 
-        # Delete the original message
-        await message.delete()
+            field_name = line.split(":", 1)[0].strip() or "sensitive value"
+            findings.append(f"{source}, line {line_number}: `{field_name[:80]}`")
 
-    def generate_error_message(self, author, bot_name, message_url):
-        error_message = f"💥***{author}, you may have shared sensitive information***💥\n"
-        error_message += f"{bot_name} has taken some precautions to redact information for you.\n"
-        error_message += f"You can view the redacted message here: <{message_url}>."
-        return error_message
+        return findings
+
+    def should_skip_sensitive_line(self, line):
+        keywords_to_skip = [
+            "redacted",
+            "invalid_token",
+            "is blank",
+            "is invalid",
+            "doesn't match",
+            "were found in",
+            "mapping values",
+            "{e}",
+            "not found",
+            "failed to parse",
+        ]
+        return line.isspace() or any(keyword in line.lower() for keyword in keywords_to_skip)
 
     def redact_sensitive_info(self, text, bot_name):
         # Use regex to find and replace sensitive information, but skip lines containing certain keywords
-        keywords_to_skip = ["redacted", "invalid_token", "is blank", "is invalid", "doesn't match", "were found in", "mapping values", "{e}", "not found", "failed to parse"]
         lines = text.split('\n')
         redacted_lines = []
 
         for line in lines:
             # Check if the line consists of only whitespace characters
-            if line.isspace() or any(keyword in line.lower() for keyword in keywords_to_skip):
+            if self.should_skip_sensitive_line(line):
                 # Skip lines that are empty or contain any of the specified keywords (case-insensitive)
                 redacted_lines.append(line)
             else:
@@ -455,34 +635,13 @@ class RedBotCog(commands.Cog):
         """
         Determines if the given text contains sensitive information based on predefined conditions.
         """
-        keywords_to_skip = ["redacted", "invalid_token", "is blank", "is invalid", "doesn't match", "were found in", "mapping values", "{e}", "not found", "failed to parse"]
+        for line in text.split('\n'):
+            if self.should_skip_sensitive_line(line):
+                continue
 
-        # Check if the line consists of only whitespace characters or contains certain keywords
-        if any(keyword in text.lower() for keyword in keywords_to_skip) or text.isspace():
-            return False
+            if self.redact_sensitive_info(line, self.bot_name) != line:
+                return True
 
-        # Check if the line contains sensitive information using regex pattern
-        if re.search(self.regex_pattern, text, flags=re.IGNORECASE):
-            line_to_redact = text.split(": ", 1)
-            if len(line_to_redact) == 2:
-                key, value = line_to_redact
-                if not any(char.isalnum() for char in value.strip()):
-                    # If all characters are spaces, skip redaction
-                    return False
-
-            if "|" in text:
-                line_split = text.rsplit("|", 1)
-                if len(line_split) == 2:
-                    key_part, value_part = line_split
-                    if not any(char.isalnum() for char in value_part.strip()) and all(
-                            char.isspace() for char in key_part.strip()):
-                        # If last character is "|" and all characters between ":" and "|" are spaces, skip redaction
-                        return False
-
-            # Line contains sensitive information
-            return True
-
-        # Line doesn't contain sensitive information
         return False
 
     async def contains_sensitive_attachments(self, attachments):
@@ -494,33 +653,15 @@ class RedBotCog(commands.Cog):
                 if att.content_type:
                     mylogger.debug(f"Attachment Content Type: {att.content_type}")  # Log content type for debugging
                 else:
-                    # Handle case where content_type is None (unrecognized type)
-                    # Optionally, inspect file extension to determine file type
-                    file_extension = att.filename.split('.')[-1].lower()  # Get file extension
-                    if file_extension == 'txt':
-                        # Treat as text file
-                        content_type = 'text/plain'
-                    elif file_extension == 'pdf':
-                        # Treat as PDF file
-                        content_type = 'application/pdf'
-                    else:
-                        # Default to generic binary data (handle based on file content)
-                        content_type = 'application/octet-stream'
-                    mylogger.debug(f"Attachment File Extension: {file_extension}")
+                    mylogger.debug(f"Attachment has no content type: {att.filename}")
 
-                if (not att.content_type or
-                        att.content_type.startswith('text') or
-                        att.content_type == 'application/octet-stream' or
-                        att.content_type.startswith('application/json') or
-                        att.content_type.startswith('application/xml')):
+                if self.is_text_like_attachment(att):
                     att_content = await att.read()
                     try:
                         text_data = att_content.decode('utf-8')  # Decode the bytes to text
                     except UnicodeDecodeError:
-                        # Handle the case where decoding as UTF-8 fails (treat as binary)
-                        mylogger.warning(f"Failed to decode attachment {att.filename} as UTF-8")
-                        # continue  # Skip to the next attachment
-                        return True
+                        mylogger.warning(f"Failed to decode attachment {att.filename} as UTF-8; skipping redaction scan.")
+                        continue
 
                     if self.is_sensitive(text_data):
                         return True
