@@ -11,8 +11,16 @@ from redbot.core import commands, app_commands
 # Global error and start messages
 START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information."
 REDACTION_REVIEW_TTL_SECONDS = 15 * 60
-# List of role IDs that should skip redaction
-IGNORED_ROLE_IDS = [
+# List of role IDs that bypass redaction entirely.
+REDACTION_BYPASS_ROLE_IDS = [
+    # 823677075751043102,
+    # 1187017579013873665,
+    # 929756550380286153,
+    # 929900016531828797,
+]
+
+# List of staff role IDs that can use another user's redaction review buttons.
+STAFF_REVIEW_ROLE_IDS = [
     # 823677075751043102,
     # 1187017579013873665,
     # 929756550380286153,
@@ -155,9 +163,8 @@ class RedBotCog(commands.Cog):
 
                 # mylogger.info(f"Received message (ID: {message.id}) from {message.author.name} in #{message.channel.name}")
 
-                # Skip processing if user has an ignored role
-                if any(role.id in IGNORED_ROLE_IDS for role in message.author.roles):
-                    mylogger.info(f"Skipping redaction for {message.author.name} due to ignored role.")
+                if any(role.id in REDACTION_BYPASS_ROLE_IDS for role in message.author.roles):
+                    mylogger.info(f"Skipping redaction for {message.author.name} due to redaction bypass role.")
                     return
 
                 # Check if the message is in a thread (is a thread or a reply in a thread)
@@ -345,7 +352,7 @@ class RedBotCog(commands.Cog):
             return True
 
         member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
-        return bool(member and any(role.id in IGNORED_ROLE_IDS for role in member.roles))
+        return bool(member and any(role.id in STAFF_REVIEW_ROLE_IDS for role in member.roles))
 
     def get_pending_redaction(self, review_id):
         pending = self.pending_redactions.get(review_id)
