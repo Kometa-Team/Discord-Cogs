@@ -1,5 +1,5 @@
-from .redactor import RedBotCogRedactor
+from .redactor import RedBotCog
 
 
 async def setup(bot):
-    await bot.add_cog(RedBotCogRedactor(bot))
+    await bot.add_cog(RedBotCog(bot))
