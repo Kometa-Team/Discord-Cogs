@@ -12,7 +12,7 @@ from redbot.core import commands, app_commands
 # Global error and start messages
 START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information."
 REDACTION_REVIEW_TTL_SECONDS = 15 * 60
-REDACTOR_BUILD_ID = "review-flow-2026-07-29-1"
+REDACTOR_BUILD_ID = "review-flow-2026-07-30-1"
 # List of role IDs that bypass redaction entirely.
 REDACTION_BYPASS_ROLE_IDS = [
     # 823677075751043102,
@@ -248,19 +248,26 @@ class RedBotCog(commands.Cog):
 
     async def send_replacement_message(self, channel, content=None, files=None):
         files = files or []
-        normalized_content = content if content else None
+        content_chunks = self.split_discord_content(content)
         sent_messages = []
 
         if not files:
-            if normalized_content is not None:
+            for content_chunk in content_chunks:
                 sent_messages.append(
-                    await channel.send(normalized_content, allowed_mentions=discord.AllowedMentions.none())
+                    await channel.send(content_chunk, allowed_mentions=discord.AllowedMentions.none())
                 )
             return sent_messages
 
+        if len(content_chunks) > 1:
+            for content_chunk in content_chunks:
+                sent_messages.append(
+                    await channel.send(content_chunk, allowed_mentions=discord.AllowedMentions.none())
+                )
+            content_chunks = []
+
         for index in range(0, len(files), 10):
             batch = files[index:index + 10]
-            batch_content = normalized_content if index == 0 else None
+            batch_content = content_chunks[0] if index == 0 and content_chunks else None
             sent_messages.append(
                 await channel.send(
                     content=batch_content,
@@ -270,6 +277,38 @@ class RedBotCog(commands.Cog):
             )
 
         return sent_messages
+
+    def split_discord_content(self, content, limit=1900):
+        if not content:
+            return []
+
+        chunks = []
+        current_lines = []
+        current_length = 0
+
+        for line in str(content).splitlines(keepends=True):
+            if len(line) > limit:
+                if current_lines:
+                    chunks.append("".join(current_lines).rstrip())
+                    current_lines = []
+                    current_length = 0
+
+                for index in range(0, len(line), limit):
+                    chunks.append(line[index:index + limit].rstrip())
+                continue
+
+            if current_length + len(line) > limit and current_lines:
+                chunks.append("".join(current_lines).rstrip())
+                current_lines = []
+                current_length = 0
+
+            current_lines.append(line)
+            current_length += len(line)
+
+        if current_lines:
+            chunks.append("".join(current_lines).rstrip())
+
+        return [chunk for chunk in chunks if chunk]
 
     def is_text_like_attachment(self, attachment):
         content_type = (attachment.content_type or "").lower()
@@ -282,7 +321,7 @@ class RedBotCog(commands.Cog):
             )
 
         extension = attachment.filename.rsplit('.', 1)[-1].lower() if '.' in attachment.filename else ''
-        return extension in {'txt', 'log', 'yml', 'yaml', 'json', 'xml', 'csv'}
+        return not extension or extension in {'txt', 'log', 'yml', 'yaml', 'json', 'xml', 'csv'}
 
     async def snapshot_attachments(self, attachments):
         snapshots = []
@@ -485,25 +524,11 @@ class RedBotCog(commands.Cog):
             start_message = START_MESSAGE.format(mention=message.author.mention, bot_name=self.bot_name)
             findings = self.build_redaction_findings(message.content, [])
 
-            # Check if the redacted content exceeds Discord's character limit
-            if len(redacted_content) > 1000:
-                redacted_file = discord.File(
-                    io.BytesIO(redacted_content.encode("utf-8")),
-                    filename=f"redacted_message_{message.author.name}.txt",
-                )
-                await self.replace_redacted_message(
-                    message,
-                    content=f"{start_message} See attached file for redacted content.",
-                    files=[redacted_file],
-                    findings=findings,
-                )
-            else:
-                # If the redacted content is within Discord's character limit, send it as a regular message
-                await self.replace_redacted_message(
-                    message,
-                    content=f"{start_message}\n\n{redacted_content}",
-                    findings=findings,
-                )
+            await self.replace_redacted_message(
+                message,
+                content=f"{start_message}\n\n{redacted_content}",
+                findings=findings,
+            )
 
         except Exception as e:
             # Log the exception (you can customize this part based on your logging setup)
