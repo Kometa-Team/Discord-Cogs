@@ -2,6 +2,7 @@ import re
 import discord
 import logging
 import io
+import os
 import asyncio
 import secrets
 import time
