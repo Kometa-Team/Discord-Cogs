@@ -11,6 +11,7 @@ from redbot.core import commands, app_commands
 # Global error and start messages
 START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information."
 REDACTION_REVIEW_TTL_SECONDS = 15 * 60
+REDACTOR_BUILD_ID = "review-flow-2026-07-29-1"
 # List of role IDs that bypass redaction entirely.
 REDACTION_BYPASS_ROLE_IDS = [
     # 823677075751043102,
@@ -132,6 +133,12 @@ class RedBotCog(commands.Cog):
         self.regex_pattern = r"(token|client.*|(?<!\w)url:|url: (?:http|https)|api_*key|(?<!\w)secret:|run_start|run_end|changes|username|password|localhost_url|\"tvdbapi\"|\"tmdbtoken\"|\"plextoken\"|\"fanarttvapikey\"): .+"
         self.processed_message_ids = set()
         self.pending_redactions = {}
+        mylogger.info(f"Loaded redactor cog build {REDACTOR_BUILD_ID} from {__file__}")
+
+    @commands.command(name="redactorversion")
+    @commands.is_owner()
+    async def redactor_version(self, ctx):
+        await ctx.send(f"Redactor build `{REDACTOR_BUILD_ID}` loaded from `{__file__}`")
 
     @commands.Cog.listener()
     async def on_message(self, message):

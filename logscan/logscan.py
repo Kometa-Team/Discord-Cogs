@@ -27,7 +27,7 @@ from redbot.core import app_commands, commands
 from redbot.core.data_manager import cog_data_path
 from redbot.core.utils.views import SimpleMenu
 
-# Create logger
+# Create logger.The logger
 mylogger = logging.getLogger('logscan')
 mylogger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
 
