@@ -15,9 +15,11 @@ from redbot.core import commands, app_commands
 # Global error and start messages
 START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information."
 REDACTION_REVIEW_TTL_SECONDS = 15 * 60
-REDACTOR_BUILD_ID = "review-flow-2026-07-30-2"
+REDACTOR_BUILD_ID = "review-flow-2026-07-30-3"
 SUPPORTED_ARCHIVE_EXTENSIONS = ('.tar.gz', '.zip', '.tar', '.gz')
 MAX_ARCHIVE_ENTRY_BYTES = 50 * 1024 * 1024
+MAX_PRIVATE_PREVIEW_FILES = 10
+MAX_PRIVATE_PREVIEW_BYTES = 7 * 1024 * 1024
 # List of role IDs that bypass redaction entirely.
 REDACTION_BYPASS_ROLE_IDS = [
     # 823677075751043102,
@@ -114,6 +116,10 @@ class RedactionReviewView(discord.ui.View):
     @discord.ui.button(label="Show Findings", style=discord.ButtonStyle.secondary)
     async def show_findings(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.show_redaction_findings(interaction, self.review_id)
+
+    @discord.ui.button(label="Show Preview", style=discord.ButtonStyle.secondary)
+    async def show_preview(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.show_redaction_preview(interaction, self.review_id)
 
     @discord.ui.button(label="Keep Redacted", style=discord.ButtonStyle.success)
     async def keep_redacted(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -605,9 +611,26 @@ class RedBotCog(commands.Cog):
         if not pending.findings:
             return "No line-level details were available. The message still matched the redaction rules."
 
-        visible_findings = pending.findings[:limit]
-        lines = [f"- {finding}" for finding in visible_findings]
-        remaining = len(pending.findings) - len(visible_findings)
+        grouped_findings = {}
+        for finding in pending.findings:
+            source = finding.split(", line ", 1)[0]
+            grouped_findings.setdefault(source, []).append(finding)
+
+        lines = []
+        remaining = 0
+        for source, findings in grouped_findings.items():
+            if len(lines) >= limit:
+                remaining += len(findings)
+                continue
+
+            lines.append(f"**{source}**")
+            for finding in findings:
+                if len(lines) >= limit:
+                    remaining += 1
+                    continue
+                detail = finding.split(", ", 1)[1] if ", " in finding else finding
+                lines.append(f"- {detail}")
+
         if remaining:
             lines.append(f"- {remaining} additional finding(s) hidden for length.")
         return "\n".join(lines)
@@ -618,11 +641,15 @@ class RedBotCog(commands.Cog):
             description=(
                 "I removed the original message because it appeared to contain sensitive information. A redacted version has been posted instead.\n\n"
                 f"The original content is held in memory for {REDACTION_REVIEW_TTL_SECONDS // 60} minutes. "
-                "Use the buttons below to inspect the sanitized findings, keep the redacted copy, or restore the original."
+                "Use the buttons below to privately inspect the sanitized findings or redacted preview, keep the redacted copy, or restore the original."
             ),
             color=discord.Color.orange(),
         )
-        embed.add_field(name="Findings", value=self.format_redaction_findings(pending, limit=5)[:1024], inline=False)
+        embed.add_field(
+            name="Stored For Review",
+            value=f"{len(pending.attachments)} attachment(s), discarded automatically after {REDACTION_REVIEW_TTL_SECONDS // 60} minutes.",
+            inline=False,
+        )
         return embed
 
     async def try_send_redaction_dm(self, author, pending):
@@ -642,13 +669,102 @@ class RedBotCog(commands.Cog):
         except discord.HTTPException as e:
             mylogger.warning(f"Failed to DM redaction review to {author}: {e}")
 
+    def sanitize_preview_filename(self, filename):
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "attachment")
+        return safe_name.strip("._") or "attachment"
+
+    def attachment_has_findings(self, pending, attachment):
+        attachment_prefix = f"attachment {attachment.filename},"
+        archive_prefix = f"archive {attachment.filename}::"
+        return any(
+            finding.startswith(attachment_prefix) or finding.startswith(archive_prefix)
+            for finding in pending.findings
+        )
+
+    def get_discord_file_size(self, discord_file):
+        fp = discord_file.fp
+        try:
+            current_position = fp.tell()
+            fp.seek(0, io.SEEK_END)
+            size = fp.tell()
+            fp.seek(current_position)
+            return size
+        except (AttributeError, OSError):
+            return 0
+
+    def build_private_redaction_preview_files(self, pending):
+        preview_files = []
+        skipped = 0
+        total_bytes = 0
+
+        def add_preview_file(preview_file):
+            nonlocal skipped, total_bytes
+            if len(preview_files) >= MAX_PRIVATE_PREVIEW_FILES:
+                skipped += 1
+                return
+
+            file_size = self.get_discord_file_size(preview_file)
+            if file_size and total_bytes + file_size > MAX_PRIVATE_PREVIEW_BYTES:
+                skipped += 1
+                return
+
+            total_bytes += file_size
+            preview_files.append(preview_file)
+
+        if pending.content:
+            redacted_content = self.redact_sensitive_info(pending.content, self.bot_name)
+            add_preview_file(
+                discord.File(
+                    io.BytesIO(redacted_content.encode("utf-8")),
+                    filename="redacted-message-preview.txt",
+                )
+            )
+
+        for attachment in pending.attachments:
+            if not self.attachment_has_findings(pending, attachment):
+                continue
+
+            preview_file = self.build_replacement_attachment(attachment)
+            preview_file.filename = f"redacted-preview-{self.sanitize_preview_filename(attachment.filename)}"
+            add_preview_file(preview_file)
+
+        return preview_files, skipped
+
     async def show_redaction_findings(self, interaction, review_id):
         pending = self.get_pending_redaction(review_id)
         if not pending:
             await interaction.response.send_message("This redaction review has expired.", ephemeral=True)
             return
 
-        await interaction.response.send_message(self.format_redaction_findings(pending), ephemeral=True)
+        embed = discord.Embed(
+            title="Redaction Findings",
+            description=self.format_redaction_findings(pending)[:4096],
+            color=discord.Color.orange(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def show_redaction_preview(self, interaction, review_id):
+        pending = self.get_pending_redaction(review_id)
+        if not pending:
+            await interaction.response.send_message("This redaction review has expired.", ephemeral=True)
+            return
+
+        preview_files, skipped = self.build_private_redaction_preview_files(pending)
+        description = "These previews show the redacted version only. They do not include the original secret values."
+        if skipped:
+            description += f"\n\n{skipped} preview file(s) were skipped because of Discord file/count limits."
+        if not preview_files:
+            description += "\n\nNo preview files were small enough to attach here. Use Show Findings for the line-level summary."
+
+        embed = discord.Embed(
+            title="Redacted Preview",
+            description=description,
+            color=discord.Color.orange(),
+        )
+        if preview_files:
+            await interaction.response.send_message(embed=embed, files=preview_files, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def keep_redaction_review(self, interaction, review_id):
         pending = self.get_pending_redaction(review_id)
