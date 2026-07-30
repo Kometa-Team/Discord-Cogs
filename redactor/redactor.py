@@ -616,7 +616,7 @@ class RedBotCog(commands.Cog):
         embed = discord.Embed(
             title="Redaction Review",
             description=(
-                "I removed the original message because it matched the secret redaction rules and posted a redacted copy.\n\n"
+                "I removed the original message because it appeared to contain sensitive information. A redacted version has been posted instead.\n\n"
                 f"The original content is held in memory for {REDACTION_REVIEW_TTL_SECONDS // 60} minutes. "
                 "Use the buttons below to inspect the sanitized findings, keep the redacted copy, or restore the original."
             ),
@@ -630,7 +630,7 @@ class RedBotCog(commands.Cog):
             embed = discord.Embed(
                 title="Redaction Review",
                 description=(
-                    "Your message was redacted in the server because it matched the secret redaction rules. "
+                    "Your message was redacted in the server because it appeared to contain sensitive information. "
                     "Use the review buttons in the thread to keep the redacted copy or restore the original."
                 ),
                 color=discord.Color.orange(),
