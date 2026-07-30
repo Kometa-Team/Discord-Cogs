@@ -6,13 +6,18 @@ import os
 import asyncio
 import secrets
 import time
+import gzip
+import tarfile
+import zipfile
 from dataclasses import dataclass, field
 from redbot.core import commands, app_commands
 
 # Global error and start messages
 START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information."
 REDACTION_REVIEW_TTL_SECONDS = 15 * 60
-REDACTOR_BUILD_ID = "review-flow-2026-07-30-1"
+REDACTOR_BUILD_ID = "review-flow-2026-07-30-2"
+SUPPORTED_ARCHIVE_EXTENSIONS = ('.tar.gz', '.zip', '.tar', '.gz')
+MAX_ARCHIVE_ENTRY_BYTES = 50 * 1024 * 1024
 # List of role IDs that bypass redaction entirely.
 REDACTION_BYPASS_ROLE_IDS = [
     # 823677075751043102,
@@ -310,6 +315,183 @@ class RedBotCog(commands.Cog):
 
         return [chunk for chunk in chunks if chunk]
 
+    def detect_archive_type(self, filename):
+        lowered = (filename or "").lower()
+        for extension in SUPPORTED_ARCHIVE_EXTENSIONS:
+            if lowered.endswith(extension):
+                return extension
+        return None
+
+    def is_archive_attachment(self, attachment):
+        return self.detect_archive_type(attachment.filename) is not None
+
+    def redact_text_bytes(self, content_bytes):
+        try:
+            text_data = content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return content_bytes, False, False
+
+        redacted_text = self.redact_sensitive_info(text_data, self.bot_name)
+        return redacted_text.encode("utf-8"), redacted_text != text_data, True
+
+    def read_limited_archive_entry(self, reader, display_name, size_hint=None):
+        if size_hint is not None and size_hint > MAX_ARCHIVE_ENTRY_BYTES:
+            mylogger.warning(f"Skipping archive entry {display_name}; entry exceeds {MAX_ARCHIVE_ENTRY_BYTES} bytes.")
+            return None
+
+        content_bytes = reader.read(MAX_ARCHIVE_ENTRY_BYTES + 1)
+        if len(content_bytes) > MAX_ARCHIVE_ENTRY_BYTES:
+            mylogger.warning(f"Skipping archive entry {display_name}; entry exceeds {MAX_ARCHIVE_ENTRY_BYTES} bytes.")
+            return None
+        return content_bytes
+
+    def archive_contains_sensitive_info(self, attachment):
+        archive_type = self.detect_archive_type(attachment.filename)
+        if not archive_type:
+            return False
+
+        return any(self.iter_archive_sensitive_findings(attachment, limit=1))
+
+    def iter_archive_sensitive_findings(self, attachment, limit=None):
+        archive_type = self.detect_archive_type(attachment.filename)
+        if not archive_type:
+            return
+
+        count = 0
+        for member_name, content_bytes in self.iter_archive_text_entries(attachment, archive_type):
+            try:
+                text_data = content_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+
+            for finding in self.find_sensitive_lines(text_data, f"archive {attachment.filename}::{member_name}"):
+                yield finding
+                count += 1
+                if limit is not None and count >= limit:
+                    return
+
+    def iter_archive_text_entries(self, attachment, archive_type):
+        if archive_type == '.zip':
+            with zipfile.ZipFile(io.BytesIO(attachment.data), 'r') as zip_ref:
+                for file_info in zip_ref.infolist():
+                    if file_info.is_dir() or '__MACOSX' in file_info.filename:
+                        continue
+                    with zip_ref.open(file_info) as entry:
+                        content_bytes = self.read_limited_archive_entry(
+                            entry,
+                            f"{attachment.filename}::{file_info.filename}",
+                            file_info.file_size,
+                        )
+                    if content_bytes is not None:
+                        yield file_info.filename, content_bytes
+            return
+
+        if archive_type in ('.tar', '.tar.gz'):
+            with tarfile.open(fileobj=io.BytesIO(attachment.data), mode='r:*') as tar_ref:
+                for file_info in tar_ref.getmembers():
+                    if not file_info.isfile() or '__MACOSX' in file_info.name:
+                        continue
+                    entry = tar_ref.extractfile(file_info)
+                    if entry is None:
+                        continue
+                    with entry:
+                        content_bytes = self.read_limited_archive_entry(
+                            entry,
+                            f"{attachment.filename}::{file_info.name}",
+                            file_info.size,
+                        )
+                    if content_bytes is not None:
+                        yield file_info.name, content_bytes
+            return
+
+        if archive_type == '.gz':
+            with gzip.GzipFile(fileobj=io.BytesIO(attachment.data), mode='rb') as gzip_ref:
+                content_bytes = self.read_limited_archive_entry(gzip_ref, attachment.filename)
+            if content_bytes is not None:
+                member_name = attachment.filename[:-3] if attachment.filename.lower().endswith('.gz') else attachment.filename
+                yield member_name or attachment.filename, content_bytes
+
+    def build_redacted_archive_attachment(self, attachment):
+        archive_type = self.detect_archive_type(attachment.filename)
+        if archive_type == '.zip':
+            return self.build_redacted_zip_attachment(attachment)
+        if archive_type in ('.tar', '.tar.gz'):
+            return self.build_redacted_tar_attachment(attachment, archive_type)
+        if archive_type == '.gz':
+            return self.build_redacted_gzip_attachment(attachment)
+        return attachment.to_file()
+
+    def build_redacted_zip_attachment(self, attachment):
+        output = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(attachment.data), 'r') as zip_ref:
+            with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as redacted_zip:
+                for file_info in zip_ref.infolist():
+                    if file_info.is_dir():
+                        redacted_zip.writestr(file_info, b"")
+                        continue
+
+                    with zip_ref.open(file_info) as entry:
+                        content_bytes = self.read_limited_archive_entry(
+                            entry,
+                            f"{attachment.filename}::{file_info.filename}",
+                            file_info.file_size,
+                        )
+                    if content_bytes is None:
+                        content_bytes = b""
+                    redacted_bytes, _, _ = self.redact_text_bytes(content_bytes)
+                    redacted_zip.writestr(file_info, redacted_bytes)
+
+        output.seek(0)
+        return discord.File(output, filename=attachment.filename)
+
+    def build_redacted_tar_attachment(self, attachment, archive_type):
+        output = io.BytesIO()
+        write_mode = 'w:gz' if archive_type == '.tar.gz' else 'w'
+        with tarfile.open(fileobj=io.BytesIO(attachment.data), mode='r:*') as tar_ref:
+            with tarfile.open(fileobj=output, mode=write_mode) as redacted_tar:
+                for file_info in tar_ref.getmembers():
+                    if not file_info.isfile():
+                        redacted_tar.addfile(file_info)
+                        continue
+
+                    entry = tar_ref.extractfile(file_info)
+                    if entry is None:
+                        continue
+
+                    with entry:
+                        content_bytes = self.read_limited_archive_entry(
+                            entry,
+                            f"{attachment.filename}::{file_info.name}",
+                            file_info.size,
+                        )
+                    if content_bytes is None:
+                        content_bytes = b""
+                    redacted_bytes, _, _ = self.redact_text_bytes(content_bytes)
+                    redacted_info = file_info
+                    redacted_info.size = len(redacted_bytes)
+                    redacted_tar.addfile(redacted_info, io.BytesIO(redacted_bytes))
+
+        output.seek(0)
+        return discord.File(output, filename=attachment.filename)
+
+    def build_redacted_gzip_attachment(self, attachment):
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(attachment.data), mode='rb') as gzip_ref:
+                content_bytes = self.read_limited_archive_entry(gzip_ref, attachment.filename)
+        except OSError:
+            mylogger.warning(f"Could not decompress gzip attachment {attachment.filename}; reposting unchanged.")
+            return attachment.to_file()
+
+        if content_bytes is None:
+            content_bytes = b""
+
+        redacted_bytes, _, _ = self.redact_text_bytes(content_bytes)
+        output = io.BytesIO()
+        with gzip.GzipFile(fileobj=output, mode='wb') as gzip_out:
+            gzip_out.write(redacted_bytes)
+        output.seek(0)
+        return discord.File(output, filename=attachment.filename)
+
     def is_text_like_attachment(self, attachment):
         content_type = (attachment.content_type or "").lower()
         if content_type:
@@ -336,6 +518,13 @@ class RedBotCog(commands.Cog):
         return snapshots
 
     def build_replacement_attachment(self, attachment):
+        if self.is_archive_attachment(attachment):
+            try:
+                return self.build_redacted_archive_attachment(attachment)
+            except (zipfile.BadZipFile, tarfile.TarError, gzip.BadGzipFile, OSError) as e:
+                mylogger.warning(f"Could not redact archive attachment {attachment.filename}: {e}")
+                return attachment.to_file()
+
         if not self.is_text_like_attachment(attachment):
             return attachment.to_file()
 
@@ -588,6 +777,10 @@ class RedBotCog(commands.Cog):
         findings.extend(self.find_sensitive_lines(message_content, "message content"))
 
         for attachment in attachments:
+            if self.is_archive_attachment(attachment):
+                findings.extend(self.iter_archive_sensitive_findings(attachment))
+                continue
+
             if not self.is_text_like_attachment(attachment):
                 continue
 
@@ -695,8 +888,22 @@ class RedBotCog(commands.Cog):
                 else:
                     mylogger.debug(f"Attachment has no content type: {att.filename}")
 
-                if self.is_text_like_attachment(att):
-                    att_content = await att.read()
+                att_content = await att.read()
+                stored_attachment = StoredAttachment(
+                    filename=att.filename,
+                    data=att_content,
+                    content_type=att.content_type or "",
+                )
+
+                if self.is_archive_attachment(stored_attachment):
+                    try:
+                        if self.archive_contains_sensitive_info(stored_attachment):
+                            return True
+                    except (zipfile.BadZipFile, tarfile.TarError, gzip.BadGzipFile, OSError) as e:
+                        mylogger.warning(f"Could not scan archive attachment {att.filename}: {e}")
+                    continue
+
+                if self.is_text_like_attachment(stored_attachment):
                     try:
                         text_data = att_content.decode('utf-8')  # Decode the bytes to text
                     except UnicodeDecodeError:
