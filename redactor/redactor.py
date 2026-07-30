@@ -15,7 +15,7 @@ from redbot.core import commands, app_commands
 # Global error and start messages
 START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information."
 REDACTION_REVIEW_TTL_SECONDS = 15 * 60
-REDACTOR_BUILD_ID = "review-flow-2026-07-30-6"
+REDACTOR_BUILD_ID = "review-flow-2026-07-30-7"
 SUPPORTED_ARCHIVE_EXTENSIONS = ('.tar.gz', '.zip', '.tar', '.gz')
 MAX_ARCHIVE_ENTRY_BYTES = 50 * 1024 * 1024
 # List of role IDs that bypass redaction entirely.
@@ -652,7 +652,13 @@ class RedBotCog(commands.Cog):
             await interaction.response.send_message("This redaction review has expired.", ephemeral=True)
             return
 
-        await interaction.response.send_message(self.format_redaction_findings(pending), ephemeral=True)
+        chunks = self.split_discord_content(self.format_redaction_findings(pending))
+        if not chunks:
+            chunks = ["No redaction findings were available."]
+
+        await interaction.response.send_message(chunks[0], ephemeral=True)
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk, ephemeral=True)
 
     async def keep_redaction_review(self, interaction, review_id):
         pending = self.get_pending_redaction(review_id)
