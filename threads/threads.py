@@ -207,7 +207,7 @@ class Threads(commands.Cog):
         ):
             await thread.send(
                 f"{initial_mention}"
-                "Someone from <@&{self.role2}> will assist when they're available.\n\n"
+                f"Someone from <@&{self.role2}> will assist when they're available.\n\n"
                 "Including `meta.log` from the beginning is a huge help. Type `!logs` for more information.\n\n"
                 "After attaching your log, do not forget to hit the green check boxes when prompted by our bot.\n\n",
                 allowed_mentions=discord.AllowedMentions(roles=[role1, role2]),
