@@ -12,7 +12,7 @@ import zipfile
 from dataclasses import dataclass, field
 from redbot.core import commands, app_commands
 
-# Global error and start messages.
+# Global error and start messages....
 START_MESSAGE = "The following was shared by {mention} and was automatically redacted by {bot_name} as it may have contained sensitive information."
 REDACTION_REVIEW_TTL_SECONDS = 15 * 60
 REDACTOR_BUILD_ID = "review-flow-2026-07-30-7"
