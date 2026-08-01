@@ -136,7 +136,13 @@ class RedBotCog(commands.Cog):
         self.bot = bot
         self.bot_name = bot.user.name
         self.bot_uid = bot.user.id
-        self.regex_pattern = r"(token|client.*|(?<!\w)url:|url: (?:http|https)|api_*key|(?<!\w)secret:|run_start|run_end|changes|username|password|localhost_url|\"tvdbapi\"|\"tmdbtoken\"|\"plextoken\"|\"fanarttvapikey\"): .+"
+        self.regex_pattern = r"(token|client.*|api_*key|(?<!\w)secret|run_start|run_end|changes|username|password|\"tvdbapi\"|\"tmdbtoken\"|\"plextoken\"|\"fanarttvapikey\"): .+"
+        self.url_secret_pattern = (
+            r"((?<!\w)(?:localhost_)?url):\s+"
+            r"(?=https?://)"
+            r"(?=\S*(?://[^/\s:@]+:[^/\s:@]+@|[?&][^=\s&]*(?:token|api[-_]*key|access[-_]*key|secret|password|passwd|pwd|auth|credential)[^=\s&]*=))"
+            r".+"
+        )
         self.processed_message_ids = set()
         self.pending_redactions = {}
         mylogger.info(f"Loaded redactor cog build {REDACTOR_BUILD_ID} from {__file__}")
@@ -853,7 +859,7 @@ class RedBotCog(commands.Cog):
                 redacted_lines.append(line)
             else:
                 # Check if the line contains sensitive information
-                if re.search(self.regex_pattern, line, flags=re.IGNORECASE):
+                if self.line_contains_sensitive_info(line):
                     # Check if all characters between ":" and the end of the line are spaces
                     line_to_redact = line.split(": ", 1)
                     if len(line_to_redact) == 2:
@@ -875,13 +881,24 @@ class RedBotCog(commands.Cog):
                                 continue
 
                     # Redact sensitive information in the line
-                    redacted_line = re.sub(self.regex_pattern, f"\\1: (redacted by {bot_name})", line, flags=re.IGNORECASE)
+                    redacted_line = self.redact_sensitive_line(line, bot_name)
                     redacted_lines.append(redacted_line)
                 else:
                     # If the line doesn't contain sensitive information, keep it as-is
                     redacted_lines.append(line)
 
         return '\n'.join(redacted_lines)
+
+    def line_contains_sensitive_info(self, line):
+        return (
+            re.search(self.regex_pattern, line, flags=re.IGNORECASE) or
+            re.search(self.url_secret_pattern, line, flags=re.IGNORECASE)
+        )
+
+    def redact_sensitive_line(self, line, bot_name):
+        replacement = f"\\1: (redacted by {bot_name})"
+        redacted_line = re.sub(self.regex_pattern, replacement, line, flags=re.IGNORECASE)
+        return re.sub(self.url_secret_pattern, replacement, redacted_line, flags=re.IGNORECASE)
 
     def is_sensitive(self, text):
         """
