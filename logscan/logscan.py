@@ -249,8 +249,14 @@ class RedBotCogLogscan(commands.Cog):
         self.current_schema_branch = "nightly"
         self.schema_url = self.schema_url_template.format(branch=self.current_schema_branch)
         self.schema_cache = {}
+        self.schema_cache_time = {}  # Track when each schema was cached (timestamp)
+        self.schema_etags = {}  # Track ETags for each branch to detect updates
+        self.schema_cache_ttl = 86400  # 24 hours in seconds
         self.version_cache = {}
         self.people_posters_names_cache = None
+
+        # Load persisted ETags on startup
+        self.schema_etags = self.load_etags_from_disk()
 
         initialize_variables()  # Call the method to initialize variables
 
@@ -374,18 +380,68 @@ class RedBotCogLogscan(commands.Cog):
 
         return validator_name in {"pattern", "anyof", "oneof", "format"}
 
+    def _is_cache_fresh(self, branch):
+        """Check if the in-memory schema cache is still fresh (within TTL)."""
+        if branch not in self.schema_cache_time:
+            return False
+
+        import time
+        age = time.time() - self.schema_cache_time[branch]
+        return age < self.schema_cache_ttl
+
     def fetch_schema_json(self):
+        """
+        Fetch the schema JSON with smart caching and ETag support.
+
+        Strategy:
+        1. Return in-memory cache if still fresh (TTL check)
+        2. Check online for updates using ETag (HEAD request)
+        3. Only download full schema if ETag changed or no cache exists
+        4. Fall back to disk cache if online check fails
+        """
         schema_url = self.schema_url
-        cached_schema = self.schema_cache.get(self.current_schema_branch)
-        if cached_schema is not None:
-            mylogger.info(f"Using cached schema for branch: {self.current_schema_branch}")
-            return cached_schema, None
+        branch = self.current_schema_branch
 
-        cached_schema = self.load_schema_from_disk(self.current_schema_branch)
-        if cached_schema is not None:
-            mylogger.info(f"Using disk-cached schema for branch: {self.current_schema_branch}")
-            return cached_schema, None
+        # 1. Check if in-memory cache is still fresh
+        if branch in self.schema_cache and self._is_cache_fresh(branch):
+            mylogger.info(f"Using fresh in-memory cached schema for branch: {branch}")
+            return self.schema_cache[branch], None
 
+        # 2. Try to check online for updates using ETag
+        mylogger.info(f"Checking for schema updates from URL: {schema_url}")
+        try:
+            # Use HEAD request to check if schema changed (efficient)
+            head_response = requests.head(
+                schema_url,
+                timeout=(5, 20),
+                headers={"User-Agent": "Botmoose20-Logscan/1.0"},
+                allow_redirects=True,
+            )
+
+            if head_response.status_code == 200:
+                new_etag = head_response.headers.get("ETag")
+                old_etag = self.schema_etags.get(branch)
+
+                # If ETags match and we have a cached version, reuse it
+                if new_etag and new_etag == old_etag:
+                    if branch in self.schema_cache:
+                        mylogger.info(f"Schema is up-to-date (ETag unchanged) for branch: {branch}")
+                        import time
+                        self.schema_cache_time[branch] = time.time()
+                        return self.schema_cache[branch], None
+
+                    cached_schema = self.load_schema_from_disk(branch)
+                    if cached_schema is not None:
+                        mylogger.info(f"Using disk-cached schema (ETag verified) for branch: {branch}")
+                        import time
+                        self.schema_cache[branch] = cached_schema
+                        self.schema_cache_time[branch] = time.time()
+                        return cached_schema, None
+        except requests.RequestException as e:
+            mylogger.warning(f"ETag check failed for {schema_url}: {type(e).__name__}: {e}")
+            # Fall through to try loading from cache below
+
+        # 3. Try to download full schema if ETag check didn't help
         mylogger.info(f"Fetching schema from URL: {schema_url}")
         try:
             schema_response = requests.get(
@@ -395,10 +451,19 @@ class RedBotCogLogscan(commands.Cog):
             )
         except requests.RequestException as e:
             mylogger.error(f"Schema fetch request failed for {schema_url}: {type(e).__name__}: {e}")
+            # Fall back to disk cache
+            cached_schema = self.load_schema_from_disk(branch)
+            if cached_schema is not None:
+                mylogger.info(f"Using disk-cached schema (online fetch failed) for branch: {branch}")
+                import time
+                self.schema_cache[branch] = cached_schema
+                self.schema_cache_time[branch] = time.time()
+                return cached_schema, None
+
             return None, (
                 "ℹ️ **SCHEMA VALIDATION UNAVAILABLE**\n"
                 "Logscan could not download the Kometa schema and no cached local copy was available.\n"
-                f"Branch: `{self.current_schema_branch}`\n"
+                f"Branch: `{branch}`\n"
                 f"URL: `{schema_url}`\n"
                 f"Request error: `{type(e).__name__}: {e}`"
             )
@@ -406,27 +471,56 @@ class RedBotCogLogscan(commands.Cog):
         mylogger.info(
             f"Schema fetch response for {schema_url}: {schema_response.status_code} {schema_response.reason}"
         )
+
         if schema_response.status_code != 200:
+            # Fall back to disk cache
+            cached_schema = self.load_schema_from_disk(branch)
+            if cached_schema is not None:
+                mylogger.info(f"Using disk-cached schema (HTTP {schema_response.status_code}) for branch: {branch}")
+                import time
+                self.schema_cache[branch] = cached_schema
+                self.schema_cache_time[branch] = time.time()
+                return cached_schema, None
+
             return None, (
                 "ℹ️ **SCHEMA VALIDATION UNAVAILABLE**\n"
                 "Logscan could not download the Kometa schema and no cached local copy was available.\n"
-                f"Branch: `{self.current_schema_branch}`\n"
+                f"Branch: `{branch}`\n"
                 f"URL: `{schema_url}`\n"
                 f"HTTP status: `{schema_response.status_code} {schema_response.reason}`"
             )
 
         try:
             schema_json = schema_response.json()
-            self.schema_cache[self.current_schema_branch] = schema_json
-            self.save_schema_to_disk(self.current_schema_branch, schema_json)
-            mylogger.info(f"Cached schema for branch: {self.current_schema_branch}")
+            # Update cache and ETag
+            self.schema_cache[branch] = schema_json
+            import time
+            self.schema_cache_time[branch] = time.time()
+
+            # Update ETag for future checks
+            new_etag = schema_response.headers.get("ETag")
+            if new_etag:
+                self.schema_etags[branch] = new_etag
+                self.save_etags_to_disk()
+
+            self.save_schema_to_disk(branch, schema_json)
+            mylogger.info(f"Fetched and cached fresh schema for branch: {branch}")
             return schema_json, None
         except ValueError as e:
             mylogger.error(f"Schema JSON parse failed for {schema_url}: {e}")
+            # Fall back to disk cache
+            cached_schema = self.load_schema_from_disk(branch)
+            if cached_schema is not None:
+                mylogger.info(f"Using disk-cached schema (parse error on new version) for branch: {branch}")
+                import time
+                self.schema_cache[branch] = cached_schema
+                self.schema_cache_time[branch] = time.time()
+                return cached_schema, None
+
             return None, (
                 "ℹ️ **SCHEMA VALIDATION UNAVAILABLE**\n"
                 "Logscan downloaded the schema response but could not parse it, and no cached local copy was available.\n"
-                f"Branch: `{self.current_schema_branch}`\n"
+                f"Branch: `{branch}`\n"
                 f"URL: `{schema_url}`\n"
                 f"Parse error: `{e}`"
             )
@@ -463,6 +557,33 @@ class RedBotCogLogscan(commands.Cog):
             os.replace(temp_file, cache_file)
         except Exception as e:
             mylogger.warning(f"Failed to save cached schema to disk for {branch}: {e}")
+
+    def get_etag_cache_file(self):
+        """Get the path to the ETag cache file."""
+        return os.path.join(self.get_schema_cache_dir(), "schema-etags.json")
+
+    def load_etags_from_disk(self):
+        """Load saved ETags from disk."""
+        etag_file = self.get_etag_cache_file()
+        if not os.path.exists(etag_file):
+            return {}
+        try:
+            with open(etag_file, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except Exception as e:
+            mylogger.warning(f"Failed to load cached ETags from disk: {e}")
+            return {}
+
+    def save_etags_to_disk(self):
+        """Save ETags to disk for persistence across restarts."""
+        etag_file = self.get_etag_cache_file()
+        temp_file = f"{etag_file}.tmp"
+        try:
+            with open(temp_file, "w", encoding="utf-8") as handle:
+                json.dump(self.schema_etags, handle)
+            os.replace(temp_file, etag_file)
+        except Exception as e:
+            mylogger.warning(f"Failed to save ETags to disk: {e}")
             try:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
