@@ -1466,9 +1466,64 @@ class ElrondRadar(commands.Cog):
             lines.extend(["", "📊 **Pod Usage**", *self._code_blocks(self._compact_pod_usage_table(top_pods, resolved_username), 1050)])
         if pods:
             lines.extend(["", "📋 **Pods**", *self._code_blocks(self._compact_pods_table(pods), 1050)])
+        usage_block, usage_warning = await self._palantir_usage_block(resolved_username)
+        if usage_warning:
+            warnings.append(usage_warning)
+        if usage_block:
+            lines.append(usage_block)
         if warnings:
             lines.extend(["", "⚠️ **Lookup Warnings**", *("- " + self._truncate_inline(warning, 220) for warning in warnings)])
         return "\n".join(lines)
+
+
+    async def _palantir_usage_block(self, username: str) -> tuple[str, str]:
+        """Neutral usage facts for a tenant, but only when something is anomalous.
+
+        Returns (block, warning). Both may be empty.
+
+        Shown only when palantir has flagged the tenant. A usage block on every
+        routine ticket would prime a support agent to suspect a customer who has
+        done nothing, and most tickets have nothing to do with sharing.
+
+        Deliberately states what was MEASURED and not what it means. The verdict
+        ("resale", "credential sharing") lives in elrond, where someone has
+        asked for it — every strong signal in this system has had at least one
+        confident-and-wrong case behind it: 135 apparent clients that were 6, a
+        resale ring that turned out to be our own nodes, and the fleet's highest
+        address count belonging to a family.
+        """
+        url = os.getenv("ELROND_PALANTIR_URL", "")
+        secret = os.getenv("ELROND_PALANTIR_SECRET") or os.getenv("PALANTIR_API_TOKEN") or ""
+        if not username or not url or not secret:
+            return "", ""
+        try:
+            data = await self._support_http_json(url, "/tenant/" + urllib.parse.quote(username), secret)
+        except Exception as exc:
+            return "", "Palantir usage lookup failed: " + str(exc)
+        if not isinstance(data, dict) or not data.get("flagged"):
+            return "", ""
+
+        apps = data.get("apps") or []
+        lines = ["", "🔍 **Usage (flagged by palantir)**"]
+        for app in apps[:5]:
+            if not isinstance(app, dict):
+                continue
+            parts = [str(app.get("clients", 0)) + " clients"]
+            peak = app.get("peak_concurrent") or 0
+            if peak:
+                parts.append(str(peak) + " at once")
+            countries = app.get("countries") or 0
+            if countries:
+                parts.append(str(countries) + (" country" if countries == 1 else " countries"))
+            requests = app.get("requests") or 0
+            if requests:
+                parts.append(f"{requests:,} requests")
+            mark = "• " if app.get("flagged") else "· "
+            lines.append(mark + "`" + str(app.get("app", "?")) + "` — " + ", ".join(parts))
+        if len(apps) > 5:
+            lines.append("· …and " + str(len(apps) - 5) + " more")
+        lines.append("- Ask Elrond `why was " + username + " flagged` for the assessment.")
+        return "\n".join(lines), ""
 
     async def _render_intake(self, *, ticket_channel, source_url: str, author: str, tenant_member, account: str, excerpt: str, user_notes: str, support_context: str = "") -> str:
         template = await self.config.intake_template() or DEFAULT_INTAKE_TEMPLATE

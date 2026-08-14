@@ -29,6 +29,7 @@ METHODS = {
     "_support_jsonrpc_text",
     "_discord_linked_user_id",
     "_build_support_context",
+    "_palantir_usage_block",
 }
 
 
@@ -205,6 +206,68 @@ class ElrondRadarIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ElfHosted username: `spence`", context)
         self.assertIn(("/customer/search", {"query": "spence"}), calls)
         self.assertIn(("/tenant/lookup", {"username": "spence"}), calls)
+
+
+class PalantirUsageBlockTests(unittest.IsolatedAsyncioTestCase):
+    """The intake block is shown only when a tenant is anomalous, and states
+    what was measured rather than what it means."""
+
+    def setUp(self):
+        self.subject = load_subject_class()()
+
+    def _stub(self, payload=None, error=None):
+        async def fake(base_url, path, secret, params=None, timeout=15):
+            if error:
+                raise RuntimeError(error)
+            return payload
+        self.subject._support_http_json = fake
+
+    async def test_unflagged_tenant_produces_no_block(self):
+        # Most tickets have nothing to do with sharing. A usage block on all of
+        # them would prime an agent to suspect a customer who has done nothing.
+        self._stub({"flagged": False, "apps": [{"app": "plex", "clients": 4}]})
+        with patch.dict(os.environ, {"ELROND_PALANTIR_URL": "http://p:8080", "ELROND_PALANTIR_SECRET": "t"}):
+            block, warning = await self.subject._palantir_usage_block("jrcorwin")
+        self.assertEqual(block, "")
+        self.assertEqual(warning, "")
+
+    async def test_flagged_tenant_shows_measurements(self):
+        self._stub({"flagged": True, "apps": [
+            {"app": "aiostreams", "clients": 84, "peak_concurrent": 2, "countries": 3,
+             "requests": 130440, "flagged": True},
+            {"app": "comet", "clients": 6, "peak_concurrent": 1, "countries": 1, "requests": 900},
+        ]})
+        with patch.dict(os.environ, {"ELROND_PALANTIR_URL": "http://p:8080", "ELROND_PALANTIR_SECRET": "t"}):
+            block, warning = await self.subject._palantir_usage_block("gformica")
+        self.assertEqual(warning, "")
+        self.assertIn("84 clients", block)
+        self.assertIn("2 at once", block)
+        self.assertIn("130,440 requests", block)
+        self.assertIn("Ask Elrond", block)
+
+    async def test_block_states_facts_not_a_verdict(self):
+        # The assessment lives in elrond, where someone deliberately asked for
+        # it. Every strong signal here has had a confident-and-wrong case.
+        self._stub({"flagged": True, "verdict": "resale",
+                    "apps": [{"app": "aiostreams", "clients": 84, "flagged": True}]})
+        with patch.dict(os.environ, {"ELROND_PALANTIR_URL": "http://p:8080", "ELROND_PALANTIR_SECRET": "t"}):
+            block, _ = await self.subject._palantir_usage_block("gformica")
+        for word in ("resale", "abuse", "suspend"):
+            self.assertNotIn(word, block.lower(), f"{word!r} leaked into the intake block")
+
+    async def test_lookup_failure_warns_but_does_not_break_intake(self):
+        self._stub(error="connection refused")
+        with patch.dict(os.environ, {"ELROND_PALANTIR_URL": "http://p:8080", "ELROND_PALANTIR_SECRET": "t"}):
+            block, warning = await self.subject._palantir_usage_block("coins")
+        self.assertEqual(block, "")
+        self.assertIn("connection refused", warning)
+
+    async def test_unconfigured_is_silent(self):
+        self._stub({"flagged": True, "apps": [{"app": "x", "clients": 9}]})
+        with patch.dict(os.environ, {"ELROND_PALANTIR_URL": "", "ELROND_PALANTIR_SECRET": ""}):
+            block, warning = await self.subject._palantir_usage_block("coins")
+        self.assertEqual(block, "")
+        self.assertEqual(warning, "")
 
 
 if __name__ == "__main__":
