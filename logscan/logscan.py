@@ -53,6 +53,8 @@ SCAN_DETAILS_TITLE = "Scan Details"
 ORIGINAL_UPLOADER_FIELD = "Original uploader"
 ORIGINAL_LOG_FILENAME_FIELD = "Original log filename"
 SCAN_REQUESTED_BY_FIELD = "Scan requested by"
+REPLY_TO_FIELD = "Reply to"
+ORIGINAL_MESSAGE_FIELD = "Original message"
 PRESERVED_ATTACHMENTS_FIELD = "Preserved attachments"
 TRACKED_LOG_FIELD = "Tracked log"
 ORIGINAL_MESSAGE_AUTHOR_LABEL = "Original message by"
@@ -3572,6 +3574,17 @@ class RedBotCogLogscan(commands.Cog):
         avatar = display_avatar or getattr(author, "avatar", None)
         return getattr(avatar, "url", None)
 
+    def get_source_reference(self, source_author):
+        mention = getattr(source_author, "mention", None)
+        if mention:
+            return mention
+
+        source_id = getattr(source_author, "id", None)
+        if source_id:
+            return f"<@{source_id}>"
+
+        return self.get_source_display_name(source_author)
+
     def build_tracked_attachment_embed(
         self,
         attachment,
@@ -3609,6 +3622,7 @@ class RedBotCogLogscan(commands.Cog):
         if preserved_source_message:
             original_message_author = getattr(preserved_source_message, "author", None)
             original_message_author_name = self.get_source_display_name(original_message_author)
+            original_message_author_ref = self.get_source_reference(original_message_author)
             avatar_url = self.get_author_avatar_url(original_message_author)
             if avatar_url:
                 embed.set_author(
@@ -3619,6 +3633,21 @@ class RedBotCogLogscan(commands.Cog):
             else:
                 embed.set_author(name=f"{ORIGINAL_MESSAGE_AUTHOR_LABEL} {original_message_author_name}")
             embed.set_footer(text=PRESERVED_UPLOAD_FOOTER)
+            embed.add_field(
+                name=REPLY_TO_FIELD,
+                value=self.truncate_discord_message_content(
+                    original_message_author_ref,
+                    DISCORD_EMBED_FIELD_VALUE_LIMIT,
+                ),
+                inline=True,
+            )
+            original_message_url = getattr(preserved_source_message, "jump_url", None)
+            if original_message_url:
+                embed.add_field(
+                    name=ORIGINAL_MESSAGE_FIELD,
+                    value=f"[Open original message]({original_message_url})",
+                    inline=True,
+                )
 
         embed.add_field(
             name=ORIGINAL_UPLOADER_FIELD,
@@ -3634,7 +3663,7 @@ class RedBotCogLogscan(commands.Cog):
             embed.add_field(
                 name=SCAN_REQUESTED_BY_FIELD,
                 value=self.truncate_discord_message_content(
-                    self.get_source_display_name(invoker),
+                    self.get_source_reference(invoker),
                     DISCORD_EMBED_FIELD_VALUE_LIMIT,
                 ),
                 inline=True,
@@ -4008,13 +4037,15 @@ class RedBotCogLogscan(commands.Cog):
         user_name = ctx.author.name  # Get the user's name
 
         response_embed = discord.Embed(
-            title=f"📁 Attachment Detected: {file_info.filename} 📁",
-            description=(
-                f"**{user_name}**, I see you attached a file 📁 **{file_info.filename}** 📁, **{user_name}**. "
-                f"Would you like to process this file and make some recommendations? "
-                f"Default value of **No/Red X** will be selected after {GLOBAL_TIMEOUT} seconds."
-            ),
+            title="Process log?",
+            description=f"`{file_info.filename}` is ready for Logscan.",
             color=discord.Color.blurple()
+        )
+        response_embed.add_field(name="Yes", value="Process and post recommendations.", inline=True)
+        response_embed.add_field(
+            name="No",
+            value=f"Skip this upload. Default after {GLOBAL_TIMEOUT} seconds.",
+            inline=True,
         )
 
         # Send the response embed and reactions
@@ -4049,14 +4080,14 @@ class RedBotCogLogscan(commands.Cog):
                 pass  # If the bot doesn't have permission to manage messages
             return "❌", None  # Return "❌" and None if timeout occurs
         finally:
-            # Edit the original message with the byebye_message
+            review_embed = discord.Embed(
+                description=f"Use `/logscan <message_link>` or `!logscan <message_link>` to scan another log.",
+                color=discord.Color.blurple(),
+            )
+            review_embed.set_footer(text=f"Requested by {user_name}")
             await sent_msg.edit(
-                embed=discord.Embed(description=f"📝 If you want to review this again, **{user_name}**:\n"
-                                                f":one: Right-click (or long press with phone) on the message that contains the log\n"
-                                                f":two: Select: `Copy Message Link`\n"
-                                                f":three: Use the command: `/logscan <message_link>` or `!logscan <message_link>` "
-                                                f"and paste the value copied from the previous step where you see `<message_link>` 📝",
-                                    color=discord.Color.blurple()))
+                embed=review_embed,
+            )
 
     async def process_attachment(
         self,
