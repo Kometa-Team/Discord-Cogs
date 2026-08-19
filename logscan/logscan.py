@@ -52,6 +52,7 @@ DISCORD_FILES_PER_MESSAGE_LIMIT = 10
 TRACKED_UPLOAD_TITLE = "Preserved log upload"
 ORIGINAL_UPLOADER_FIELD = "Original uploader"
 ORIGINAL_LOG_FILENAME_FIELD = "Original log filename"
+SCAN_REQUESTED_BY_FIELD = "Scan requested by"
 PRESERVED_ATTACHMENTS_FIELD = "Preserved attachments"
 TRACKED_LOG_FIELD = "Tracked log"
 ORIGINAL_MESSAGE_AUTHOR_LABEL = "Original message by"
@@ -2836,37 +2837,6 @@ class RedBotCogLogscan(commands.Cog):
 
         return summary_info_embed
 
-    def create_user_info_embed(self, user, invoker, filename):
-        # Create an embed for the scan details page
-        tracked_filename = None
-        if isinstance(filename, tuple):
-            filename, tracked_filename = filename
-
-        description = (
-            f"**{ORIGINAL_UPLOADER_FIELD}:** {user.display_name}\n"
-            f"**Scan requested by:** {invoker.display_name}\n"
-            f"**{ORIGINAL_LOG_FILENAME_FIELD}:** {filename}"
-        )
-        if tracked_filename and tracked_filename != filename:
-            description += f"\n**{TRACKED_LOG_FIELD}:** {tracked_filename}"
-
-        user_info_embed = discord.Embed(
-            title="**Scan Details**",
-            description=description,
-            color=discord.Color.blurple(),
-        )
-
-        # Set the thumbnail to the author's avatar if available
-        user_avatar = getattr(user, "display_avatar", None) or getattr(user, "avatar", None)
-        user_avatar_url = getattr(user_avatar, "url", None)
-        if not user_avatar_url:
-            default_avatar = getattr(user, "default_avatar", None)
-            user_avatar_url = getattr(default_avatar, "url", None)
-        if user_avatar_url:
-            user_info_embed.set_thumbnail(url=user_avatar_url)
-
-        return user_info_embed
-
     def create_kometa_info_embed(self, header_lines, finished_lines, message, attachment):
         # Initialize server_icon_url to None
         server_icon_url = None
@@ -3081,6 +3051,7 @@ class RedBotCogLogscan(commands.Cog):
         attachment,
         source_filename=None,
         preserved_source_message=None,
+        invoker=None,
     ):
         tracked_filename = self.build_attachment_tracking_name(
             attachment,
@@ -3093,6 +3064,7 @@ class RedBotCogLogscan(commands.Cog):
             linked_message_author,
             source_filename=source_filename,
             preserved_source_message=preserved_source_message,
+            invoker=invoker,
         )
         embed_message = await ctx.send(embed=tracking_embed)
         preserved_links = await self.send_preserved_source_attachments(
@@ -3581,6 +3553,7 @@ class RedBotCogLogscan(commands.Cog):
         source_author,
         source_filename=None,
         preserved_source_message=None,
+        invoker=None,
     ):
         original_uploader = self.get_source_display_name(source_author) or "Unknown"
         original_filename = source_filename or attachment.filename
@@ -3601,7 +3574,7 @@ class RedBotCogLogscan(commands.Cog):
         else:
             embed = discord.Embed(
                 title=TRACKED_UPLOAD_TITLE,
-                description="Original message had no text.",
+                description="Original message had no text." if preserved_source_message else "Tracked log is ready.",
                 color=discord.Color.blurple(),
             )
 
@@ -3629,6 +3602,15 @@ class RedBotCogLogscan(commands.Cog):
             value=self.truncate_discord_message_content(original_filename, DISCORD_EMBED_FIELD_VALUE_LIMIT),
             inline=True,
         )
+        if invoker:
+            embed.add_field(
+                name=SCAN_REQUESTED_BY_FIELD,
+                value=self.truncate_discord_message_content(
+                    self.get_source_display_name(invoker),
+                    DISCORD_EMBED_FIELD_VALUE_LIMIT,
+                ),
+                inline=True,
+            )
         return embed
 
     def is_spoiler_attachment(self, attachment):
@@ -4063,7 +4045,6 @@ class RedBotCogLogscan(commands.Cog):
 
         # mylogger.info(f"Summary Lines: {summary_lines}")
 
-        # Call the create_user_info_embed method
         preserved_source_message = None
         if delete_source_message and source_message is not None:
             if self.is_help_forum_thread_message(source_message):
@@ -4075,6 +4056,7 @@ class RedBotCogLogscan(commands.Cog):
             attachment,
             source_filename=source_filename,
             preserved_source_message=preserved_source_message,
+            invoker=invoker,
         )
         source_message_deleted = False
         if (
@@ -4084,16 +4066,6 @@ class RedBotCogLogscan(commands.Cog):
         ):
             await self.delete_tracked_source_message(source_message)
             source_message_deleted = True
-
-        user_info_embed = self.create_user_info_embed(
-            linked_message_author,
-            invoker,
-            (attachment.filename, tracked_filename),
-        )
-        # mylogger.info("user_info_embed:")
-        # mylogger.info(f"Title: {user_info_embed.title}")
-        # mylogger.info(f"Description: {user_info_embed.description}")
-        # mylogger.info(f"Color: {user_info_embed.color}")
 
         # Call the create_kometa_info_embed method
         kometa_info_embed, incomplete_message = self.create_kometa_info_embed(header_lines, finished_lines, ctx,
@@ -4191,10 +4163,6 @@ class RedBotCogLogscan(commands.Cog):
         # Initialize an empty list for page metadata
         page_entries = []
 
-        # Add other pages if available
-        if user_info_embed:
-            page_entries.append(self.build_page_entry(user_info_embed))
-
         if scan_summary_embed:
             page_entries.append(self.build_page_entry(scan_summary_embed))
 
@@ -4232,25 +4200,8 @@ class RedBotCogLogscan(commands.Cog):
 
         pages = [entry["page"] for entry in page_entries]
 
-        # Add TOC for the scan details page
-        toc_entries, toc_text = self.generate_toc_entries_and_string(page_entries)
-
-        # Generate the TOC string
-        toc_string = "\n".join([f"`Page {str(entry['page']).zfill(2)}:` {entry['name']}" for entry in toc_entries])
-        # mylogger.info(f"toc_string: {toc_string}")
-
-        # Combine TOC header and string
-        toc_header = f"{user_info_embed.description}\n\nTable of Contents:"
-        full_toc_string = f"{toc_header}\n{toc_string}"
-
-        # Check if the combined TOC string exceeds the character limit
-        if len(full_toc_string) > 4096:
-            # Truncate at 4093 characters and add "..."
-            truncated_toc_string = full_toc_string[:4093] + "..."
-            user_info_embed.description = truncated_toc_string
-        else:
-            # Set the full TOC string as the description
-            user_info_embed.description = full_toc_string
+        # Add page metadata for the scan result menu
+        toc_entries, _ = self.generate_toc_entries_and_string(page_entries)
 
         menu = MyMenu(
             pages,
