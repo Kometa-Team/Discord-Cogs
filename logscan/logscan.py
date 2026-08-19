@@ -53,6 +53,7 @@ SCAN_DETAILS_TITLE = "Scan Details"
 ORIGINAL_MESSAGE_TEXT_LABEL = "Original message text"
 ORIGINAL_UPLOADER_FIELD = "Original uploader"
 ORIGINAL_LOG_FILENAME_FIELD = "Original log filename"
+ORIGINAL_ARCHIVE_FIELD = "Original archive"
 SCAN_REQUESTED_BY_FIELD = "Scan requested by"
 ORIGINAL_UPLOADER_MENTION_FIELD = "Original uploader mention"
 ORIGINAL_MESSAGE_FIELD = "Original message"
@@ -2967,6 +2968,7 @@ class RedBotCogLogscan(commands.Cog):
         attachment,
         source_filename=None,
         tracked_filename=None,
+        content_bytes=None,
     ):
         if tracked_filename is None:
             tracked_filename = self.build_attachment_tracking_name(
@@ -2974,7 +2976,12 @@ class RedBotCogLogscan(commands.Cog):
                 linked_message_author,
                 source_filename=source_filename,
             )
-        tracked_file = await attachment.to_file(filename=tracked_filename)
+
+        if content_bytes is None:
+            tracked_file = await attachment.to_file(filename=tracked_filename)
+        else:
+            tracked_file = discord.File(io.BytesIO(content_bytes), filename=tracked_filename)
+
         tracked_message = await ctx.send(file=tracked_file)
         tracked_url = self.get_uploaded_attachment_url(tracked_message, tracked_filename)
         return tracked_filename, tracked_url
@@ -3422,6 +3429,10 @@ class RedBotCogLogscan(commands.Cog):
             return markdown_link_match.group(1).strip()
         return value
 
+    @staticmethod
+    def is_archive_member_filename(filename):
+        return "::" in (filename or "")
+
     def format_attachment_link_value(self, filename, url):
         if url:
             return self.truncate_discord_message_content(
@@ -3590,9 +3601,18 @@ class RedBotCogLogscan(commands.Cog):
         )
         embed.add_field(
             name=ORIGINAL_LOG_FILENAME_FIELD,
-            value=self.format_attachment_link_value(original_filename, getattr(attachment, "url", None)),
+            value=self.format_attachment_link_value(
+                original_filename,
+                None if self.is_archive_member_filename(original_filename) else getattr(attachment, "url", None),
+            ),
             inline=True,
         )
+        if self.is_archive_member_filename(original_filename) and getattr(attachment, "url", None):
+            embed.add_field(
+                name=ORIGINAL_ARCHIVE_FIELD,
+                value=self.format_attachment_link_value(attachment.filename, getattr(attachment, "url", None)),
+                inline=True,
+            )
         if invoker:
             embed.add_field(
                 name=SCAN_REQUESTED_BY_FIELD,
@@ -3976,7 +3996,7 @@ class RedBotCogLogscan(commands.Cog):
                 )
                 extracted_files = self._extract_archive_entries(
                     compressed_path,
-                    local_filename,
+                    source_filename or attachment.filename,
                     attachment.filename,
                 )
 
@@ -4044,6 +4064,156 @@ class RedBotCogLogscan(commands.Cog):
                 embed=review_embed,
             )
 
+    @staticmethod
+    def is_kometa_log_content(content):
+        lowered_content = content.lower()
+        return "[kometa.py:" in lowered_content or "[plex_meta_manager.py:" in lowered_content
+
+    def build_archive_log_candidates(self, extracted_files):
+        valid_logs = []
+        skipped_files = []
+
+        for file_name, content, content_bytes in extracted_files:
+            if not has_supported_file_extension(file_name):
+                skipped_files.append((file_name, "unsupported file extension"))
+                continue
+
+            if not self.is_kometa_log_content(content):
+                skipped_files.append((file_name, "not a complete or valid Kometa log"))
+                continue
+
+            valid_logs.append((file_name, content, content_bytes))
+
+        return valid_logs, skipped_files
+
+    def build_archive_status_embed(
+        self,
+        archive_filename,
+        total_files,
+        valid_count,
+        skipped_count,
+        *,
+        status,
+        current_index=None,
+        current_filename=None,
+    ):
+        embed = discord.Embed(
+            title="Archive Logscan Progress",
+            description=f"Archive: `{archive_filename}`",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="Extracted supported files", value=str(total_files), inline=True)
+        embed.add_field(name="Kometa logs queued", value=str(valid_count), inline=True)
+        embed.add_field(name="Skipped files", value=str(skipped_count), inline=True)
+        embed.add_field(name="Status", value=status, inline=False)
+
+        if current_filename:
+            current_value = self.truncate_discord_message_content(
+                f"{current_index}/{valid_count}: `{current_filename}`",
+                DISCORD_EMBED_FIELD_VALUE_LIMIT,
+            )
+            embed.add_field(name="Current file", value=current_value, inline=False)
+
+        return embed
+
+    async def update_archive_status_message(self, status_message, embed):
+        if not status_message:
+            return
+
+        try:
+            await status_message.edit(embed=embed)
+        except discord.HTTPException as e:
+            mylogger.warning(f"Failed to update archive progress message: {e}")
+
+    async def process_extracted_archive_files(
+        self,
+        ctx,
+        attachment,
+        resolved_author,
+        extracted_files,
+        archive_filename,
+        *,
+        invoker=None,
+        delete_source_message=False,
+        source_message=None,
+    ):
+        valid_logs, skipped_files = self.build_archive_log_candidates(extracted_files)
+        status_message = await ctx.send(
+            embed=self.build_archive_status_embed(
+                archive_filename,
+                len(extracted_files),
+                len(valid_logs),
+                len(skipped_files),
+                status="Waiting for confirmation.",
+            )
+        )
+
+        if not valid_logs:
+            await self.update_archive_status_message(
+                status_message,
+                self.build_archive_status_embed(
+                    archive_filename,
+                    len(extracted_files),
+                    len(valid_logs),
+                    len(skipped_files),
+                    status="No valid Kometa logs found in this archive.",
+                ),
+            )
+            return
+
+        archive_prompt = SimpleNamespace(filename=f"{archive_filename} ({len(valid_logs)} log file(s))")
+        decision, decision_user = await self.prompt_user_and_get_decision(ctx, archive_prompt)
+        if decision != "✅":
+            await self.update_archive_status_message(
+                status_message,
+                self.build_archive_status_embed(
+                    archive_filename,
+                    len(extracted_files),
+                    len(valid_logs),
+                    len(skipped_files),
+                    status="Archive scan skipped.",
+                ),
+            )
+            return
+
+        scan_invoker = invoker or decision_user
+        for index, (file_name, content, content_bytes) in enumerate(valid_logs, start=1):
+            await self.update_archive_status_message(
+                status_message,
+                self.build_archive_status_embed(
+                    archive_filename,
+                    len(extracted_files),
+                    len(valid_logs),
+                    len(skipped_files),
+                    status="Scanning archive.",
+                    current_index=index,
+                    current_filename=file_name,
+                ),
+            )
+            await self.process_attachment(
+                ctx,
+                resolved_author,
+                scan_invoker,
+                attachment,
+                content,
+                content_bytes,
+                source_filename=file_name,
+                delete_source_message=delete_source_message,
+                source_message=source_message,
+                tracked_content_bytes=content_bytes,
+            )
+
+        await self.update_archive_status_message(
+            status_message,
+            self.build_archive_status_embed(
+                archive_filename,
+                len(extracted_files),
+                len(valid_logs),
+                len(skipped_files),
+                status=f"Completed {len(valid_logs)} archive log scan(s).",
+            ),
+        )
+
     async def process_attachment(
         self,
         ctx,
@@ -4056,6 +4226,7 @@ class RedBotCogLogscan(commands.Cog):
         source_filename=None,
         delete_source_message=False,
         source_message=None,
+        tracked_content_bytes=None,
     ):
         # Your processing code when "✅" is clicked
         mylogger.info(f"process_attachment is starting")
@@ -4270,6 +4441,7 @@ class RedBotCogLogscan(commands.Cog):
                 attachment,
                 source_filename=source_filename,
                 tracked_filename=tracked_filename,
+                content_bytes=tracked_content_bytes,
             )
             self.add_attachment_links_to_scan_details_embed(
                 scan_details_embed,
@@ -4438,44 +4610,24 @@ class RedBotCogLogscan(commands.Cog):
                     if extension in SUPPORTED_COMPRESSED_FORMATS:
                         mylogger.info(
                             f"SLASH-Compressed file detected. Sending {attachment.filename} to handle_compressed_file")
+                        if bad_channel:
+                            await ctx.reply(bad_channel_msg, delete_after=20, suppress_embeds=True)
+                            return
+
                         extracted_files = await self.handle_compressed_file(
                             ctx,
                             attachment,
                             resolved_author,
                             source_filename=resolved_filename,
                         )
-
-                        # Process each extracted file
-                        for extracted_file in extracted_files:
-                            file_name, content, content_bytes = extracted_file
-                            # Check if the extracted file has a supported extension
-                            if has_supported_file_extension(file_name):
-                                if ("[kometa.py:" in content.lower() or "[plex_meta_manager.py:" in content.lower()) and not bad_channel:
-                                    mylogger.info(
-                                        f"SLASH-kometa.py/plex_meta_manager.py: detected in content. Sending to prompt_user_and_get_decision")
-                                    decision, invoker = await self.prompt_user_and_get_decision(ctx, attachment)
-
-                                    if decision == "✅":
-                                        # Rest of the processing code when "✅" is clicked
-                                        await self.process_attachment(
-                                            ctx,
-                                            resolved_author,
-                                            ctx.author,
-                                            attachment,
-                                            content,
-                                            content_bytes,
-                                            source_filename=resolved_filename,
-                                        )
-                                else:
-                                    if bad_channel:
-                                        await ctx.reply(bad_channel_msg, delete_after=20, suppress_embeds=True)
-                                    else:
-                                        mylogger.info(
-                                            f"SLASH-💥File {file_name} extracted from the compressed file {attachment.filename} does not seem to be a complete or valid Kometa log file.💥")
-                                        return
-                            else:
-                                mylogger.info(
-                                    f"SLASH-💥File {file_name} extracted from the compressed file {attachment.filename} is not a supported format.💥")
+                        await self.process_extracted_archive_files(
+                            ctx,
+                            attachment,
+                            resolved_author,
+                            extracted_files,
+                            resolved_filename,
+                            invoker=ctx.author,
+                        )
                     else:
                         content_bytes = await attachment.read()
                         try:
@@ -4620,46 +4772,25 @@ class RedBotCogLogscan(commands.Cog):
 
                 if extension in SUPPORTED_COMPRESSED_FORMATS:
                     mylogger.info(f"Compressed file detected. Sending {attachment.filename} to handle_compressed_file")
+                    if bad_channel:
+                        await message.reply(bad_channel_msg, delete_after=20, suppress_embeds=True)
+                        return
+
                     extracted_files = await self.handle_compressed_file(
                         ctx,
                         attachment,
                         resolved_author,
                         source_filename=resolved_filename,
                     )
-
-                    # Process each extracted file
-                    for extracted_file in extracted_files:
-                        file_name, content, content_bytes = extracted_file
-                        # Check if the extracted file has a supported extension
-                        if has_supported_file_extension(file_name):
-                            if ("[kometa.py:" in content.lower() or "[plex_meta_manager.py:" in content.lower()) and not bad_channel:
-                                mylogger.info(
-                                    f"kometa.py/plex_meta_manager.py: detected in content. Sending to prompt_user_and_get_decision")
-                                decision, invoker = await self.prompt_user_and_get_decision(ctx, attachment)
-
-                                if decision == "✅":
-                                    # Rest of the processing code when "✅" is clicked
-                                    await self.process_attachment(
-                                        ctx,
-                                        resolved_author,
-                                        invoker,
-                                        attachment,
-                                        content,
-                                        content_bytes,
-                                        source_filename=resolved_filename,
-                                        delete_source_message=delete_source_message,
-                                        source_message=message,
-                                    )
-                            else:
-                                if bad_channel:
-                                    await message.reply(bad_channel_msg, delete_after=20, suppress_embeds=True)
-                                    return
-                                else:
-                                    mylogger.info(
-                                        f"💥File {file_name} extracted from the compressed file {attachment.filename} does not seem to be a complete or valid Kometa log file.💥")
-                        else:
-                            mylogger.info(
-                                f"💥File {file_name} extracted from the compressed file {attachment.filename} is not a supported format.💥")
+                    await self.process_extracted_archive_files(
+                        ctx,
+                        attachment,
+                        resolved_author,
+                        extracted_files,
+                        resolved_filename,
+                        delete_source_message=delete_source_message,
+                        source_message=message,
+                    )
                 elif has_supported_file_extension(attachment.filename):
                     mylogger.info(f"Valid extension detected for {attachment.filename}.")
                     content_bytes = await attachment.read()
