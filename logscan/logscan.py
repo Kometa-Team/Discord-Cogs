@@ -61,6 +61,7 @@ TRACKED_LOG_FIELD = "Tracked log"
 EXTRACTED_CONFIG_FIELD = "Extracted config.yml"
 CONFIG_PENDING_VALUE = "Detected. Waiting for extraction decision."
 CONFIG_SKIPPED_VALUE = "Detected. Extraction skipped."
+CONFIG_ARCHIVE_SKIPPED_VALUE = "Detected. Extraction skipped for archive scan."
 TOC_FIELD = "Table of Contents"
 ORIGINAL_MESSAGE_AUTHOR_LABEL = "Original message by"
 PRESERVED_UPLOAD_FOOTER = "Original message remains available for native Discord replies."
@@ -4096,6 +4097,9 @@ class RedBotCogLogscan(commands.Cog):
         status,
         current_index=None,
         current_filename=None,
+        completed_count=0,
+        failed_count=0,
+        failed_files=None,
     ):
         embed = discord.Embed(
             title="Archive Logscan Progress",
@@ -4105,6 +4109,8 @@ class RedBotCogLogscan(commands.Cog):
         embed.add_field(name="Extracted supported files", value=str(total_files), inline=True)
         embed.add_field(name="Kometa logs queued", value=str(valid_count), inline=True)
         embed.add_field(name="Skipped files", value=str(skipped_count), inline=True)
+        embed.add_field(name="Completed", value=str(completed_count), inline=True)
+        embed.add_field(name="Failed", value=str(failed_count), inline=True)
         embed.add_field(name="Status", value=status, inline=False)
 
         if current_filename:
@@ -4113,6 +4119,16 @@ class RedBotCogLogscan(commands.Cog):
                 DISCORD_EMBED_FIELD_VALUE_LIMIT,
             )
             embed.add_field(name="Current file", value=current_value, inline=False)
+
+        if failed_files:
+            failed_text = "\n".join(f"`{name}`: {reason}" for name, reason in failed_files[:5])
+            if len(failed_files) > 5:
+                failed_text += f"\n...and {len(failed_files) - 5} more."
+            embed.add_field(
+                name="Failed files",
+                value=self.truncate_discord_message_content(failed_text, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+                inline=False,
+            )
 
         return embed
 
@@ -4177,6 +4193,9 @@ class RedBotCogLogscan(commands.Cog):
             return
 
         scan_invoker = invoker or decision_user
+        archive_config_extract_decision = None
+        completed_count = 0
+        failed_files = []
         for index, (file_name, content, content_bytes) in enumerate(valid_logs, start=1):
             await self.update_archive_status_message(
                 status_message,
@@ -4188,20 +4207,33 @@ class RedBotCogLogscan(commands.Cog):
                     status="Scanning archive.",
                     current_index=index,
                     current_filename=file_name,
+                    completed_count=completed_count,
+                    failed_count=len(failed_files),
+                    failed_files=failed_files,
                 ),
             )
-            await self.process_attachment(
-                ctx,
-                resolved_author,
-                scan_invoker,
-                attachment,
-                content,
-                content_bytes,
-                source_filename=file_name,
-                delete_source_message=delete_source_message,
-                source_message=source_message,
-                tracked_content_bytes=content_bytes,
-            )
+            try:
+                config_extract_decision = await self.process_attachment(
+                    ctx,
+                    resolved_author,
+                    scan_invoker,
+                    attachment,
+                    content,
+                    content_bytes,
+                    source_filename=file_name,
+                    delete_source_message=delete_source_message,
+                    source_message=source_message,
+                    tracked_content_bytes=content_bytes,
+                    prompt_for_config=archive_config_extract_decision is None,
+                    config_extract_decision=archive_config_extract_decision,
+                )
+                if archive_config_extract_decision is None and config_extract_decision is not None:
+                    archive_config_extract_decision = config_extract_decision
+                completed_count += 1
+            except Exception as e:
+                mylogger.exception(f"Archive logscan failed for {file_name}: {e}")
+                failed_files.append((file_name, f"{type(e).__name__}: {e}"))
+                continue
 
         await self.update_archive_status_message(
             status_message,
@@ -4210,7 +4242,227 @@ class RedBotCogLogscan(commands.Cog):
                 len(extracted_files),
                 len(valid_logs),
                 len(skipped_files),
-                status=f"Completed {len(valid_logs)} archive log scan(s).",
+                status=f"Completed {completed_count}/{len(valid_logs)} archive log scan(s).",
+                completed_count=completed_count,
+                failed_count=len(failed_files),
+                failed_files=failed_files,
+            ),
+        )
+
+    def build_attachment_batch_status_embed(
+        self,
+        batch_name,
+        attachment_count,
+        queued_count,
+        skipped_count,
+        *,
+        status,
+        current_index=None,
+        current_filename=None,
+        completed_count=0,
+        failed_count=0,
+        failed_files=None,
+    ):
+        embed = discord.Embed(
+            title="Attachment Logscan Progress",
+            description=f"Message: `{batch_name}`",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="Attachments", value=str(attachment_count), inline=True)
+        embed.add_field(name="Log scans queued", value=str(queued_count), inline=True)
+        embed.add_field(name="Skipped files", value=str(skipped_count), inline=True)
+        embed.add_field(name="Completed", value=str(completed_count), inline=True)
+        embed.add_field(name="Failed", value=str(failed_count), inline=True)
+        embed.add_field(name="Status", value=status, inline=False)
+
+        if current_filename:
+            current_value = self.truncate_discord_message_content(
+                f"{current_index}/{queued_count}: `{current_filename}`",
+                DISCORD_EMBED_FIELD_VALUE_LIMIT,
+            )
+            embed.add_field(name="Current file", value=current_value, inline=False)
+
+        if failed_files:
+            failed_text = "\n".join(f"`{name}`: {reason}" for name, reason in failed_files[:5])
+            if len(failed_files) > 5:
+                failed_text += f"\n...and {len(failed_files) - 5} more."
+            embed.add_field(
+                name="Failed files",
+                value=self.truncate_discord_message_content(failed_text, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+                inline=False,
+            )
+
+        return embed
+
+    async def build_attachment_batch_log_candidates(
+        self,
+        ctx,
+        attachments,
+        source_message,
+    ):
+        valid_logs = []
+        skipped_files = []
+
+        for attachment in attachments:
+            resolved_author, resolved_filename = self.resolve_attachment_provenance(
+                source_message.author,
+                source_message.content,
+                attachment,
+                source_message.embeds,
+            )
+            extension = detect_archive_type(attachment.filename)
+
+            if extension in SUPPORTED_COMPRESSED_FORMATS:
+                mylogger.info(f"Compressed file detected in attachment batch: {attachment.filename}")
+                extracted_files = await self.handle_compressed_file(
+                    ctx,
+                    attachment,
+                    resolved_author,
+                    source_filename=resolved_filename,
+                )
+                archive_logs, archive_skipped = self.build_archive_log_candidates(extracted_files)
+                for file_name, content, content_bytes in archive_logs:
+                    valid_logs.append({
+                        "attachment": attachment,
+                        "resolved_author": resolved_author,
+                        "source_filename": file_name,
+                        "content": content,
+                        "content_bytes": content_bytes,
+                        "tracked_content_bytes": content_bytes,
+                    })
+                skipped_files.extend(archive_skipped)
+                continue
+
+            if not has_supported_file_extension(attachment.filename):
+                skipped_files.append((resolved_filename, "unsupported file extension"))
+                continue
+
+            content_bytes = await attachment.read()
+            content = decode_bytes_with_fallback(content_bytes)
+            if not self.is_kometa_log_content(content):
+                skipped_files.append((resolved_filename, "not a complete or valid Kometa log"))
+                continue
+
+            valid_logs.append({
+                "attachment": attachment,
+                "resolved_author": resolved_author,
+                "source_filename": resolved_filename,
+                "content": content,
+                "content_bytes": content_bytes,
+                "tracked_content_bytes": None,
+            })
+
+        return valid_logs, skipped_files
+
+    async def process_attachment_batch(
+        self,
+        ctx,
+        attachments,
+        source_message,
+        *,
+        invoker=None,
+        delete_source_message=False,
+    ):
+        valid_logs, skipped_files = await self.build_attachment_batch_log_candidates(
+            ctx,
+            attachments,
+            source_message,
+        )
+        batch_name = f"{getattr(source_message, 'id', 'unknown')} ({len(attachments)} attachment(s))"
+        status_message = await ctx.send(
+            embed=self.build_attachment_batch_status_embed(
+                batch_name,
+                len(attachments),
+                len(valid_logs),
+                len(skipped_files),
+                status="Waiting for confirmation.",
+            )
+        )
+
+        if not valid_logs:
+            await self.update_archive_status_message(
+                status_message,
+                self.build_attachment_batch_status_embed(
+                    batch_name,
+                    len(attachments),
+                    len(valid_logs),
+                    len(skipped_files),
+                    status="No valid Kometa logs found in these attachments.",
+                ),
+            )
+            return
+
+        batch_prompt = SimpleNamespace(filename=f"{len(attachments)} attachment(s), {len(valid_logs)} log scan(s)")
+        decision, decision_user = await self.prompt_user_and_get_decision(ctx, batch_prompt)
+        if decision != "✅":
+            await self.update_archive_status_message(
+                status_message,
+                self.build_attachment_batch_status_embed(
+                    batch_name,
+                    len(attachments),
+                    len(valid_logs),
+                    len(skipped_files),
+                    status="Attachment batch scan skipped.",
+                ),
+            )
+            return
+
+        scan_invoker = invoker or decision_user
+        batch_config_extract_decision = None
+        completed_count = 0
+        failed_files = []
+        for index, log_info in enumerate(valid_logs, start=1):
+            current_filename = log_info["source_filename"]
+            await self.update_archive_status_message(
+                status_message,
+                self.build_attachment_batch_status_embed(
+                    batch_name,
+                    len(attachments),
+                    len(valid_logs),
+                    len(skipped_files),
+                    status="Scanning attachments.",
+                    current_index=index,
+                    current_filename=current_filename,
+                    completed_count=completed_count,
+                    failed_count=len(failed_files),
+                    failed_files=failed_files,
+                ),
+            )
+
+            try:
+                config_extract_decision = await self.process_attachment(
+                    ctx,
+                    log_info["resolved_author"],
+                    scan_invoker,
+                    log_info["attachment"],
+                    log_info["content"],
+                    log_info["content_bytes"],
+                    source_filename=current_filename,
+                    delete_source_message=delete_source_message,
+                    source_message=source_message,
+                    tracked_content_bytes=log_info["tracked_content_bytes"],
+                    prompt_for_config=batch_config_extract_decision is None,
+                    config_extract_decision=batch_config_extract_decision,
+                )
+                if batch_config_extract_decision is None and config_extract_decision is not None:
+                    batch_config_extract_decision = config_extract_decision
+                completed_count += 1
+            except Exception as e:
+                mylogger.exception(f"Attachment batch logscan failed for {current_filename}: {e}")
+                failed_files.append((current_filename, f"{type(e).__name__}: {e}"))
+                continue
+
+        await self.update_archive_status_message(
+            status_message,
+            self.build_attachment_batch_status_embed(
+                batch_name,
+                len(attachments),
+                len(valid_logs),
+                len(skipped_files),
+                status=f"Completed {completed_count}/{len(valid_logs)} attachment log scan(s).",
+                completed_count=completed_count,
+                failed_count=len(failed_files),
+                failed_files=failed_files,
             ),
         )
 
@@ -4227,6 +4479,8 @@ class RedBotCogLogscan(commands.Cog):
         delete_source_message=False,
         source_message=None,
         tracked_content_bytes=None,
+        prompt_for_config=True,
+        config_extract_decision=None,
     ):
         # Your processing code when "✅" is clicked
         mylogger.info(f"process_attachment is starting")
@@ -4412,7 +4666,13 @@ class RedBotCogLogscan(commands.Cog):
         toc_entries, _ = self.generate_toc_entries_and_string(page_entries)
         self.add_toc_to_scan_details_embed(scan_details_embed, toc_entries)
         if config_content:
-            self.add_config_status_to_scan_details_embed(scan_details_embed, CONFIG_PENDING_VALUE)
+            if config_extract_decision is True:
+                config_status = "Detected. Extracting config.yml."
+            elif prompt_for_config:
+                config_status = CONFIG_PENDING_VALUE
+            else:
+                config_status = CONFIG_ARCHIVE_SKIPPED_VALUE
+            self.add_config_status_to_scan_details_embed(scan_details_embed, config_status)
         self.fit_scan_details_embed_for_discord(scan_details_embed)
 
         menu = MyMenu(
@@ -4455,9 +4715,41 @@ class RedBotCogLogscan(commands.Cog):
             mylogger.error(f"STANDARD: An error occurred while starting the menu. {e}")
             await ctx.send(f"An error occurred while starting the menu.")
 
-        # Call the send_config_content function to extract extracted config.yml file
-        # Prompt the user for whether they want the .yml file attached
-        if config_content:
+        if config_content and config_extract_decision is True:
+            config_filename, config_url = await self.send_config_content(
+                ctx,
+                linked_message_author,
+                config_content,
+                attachment,
+                source_filename=source_filename,
+            )
+            self.add_config_link_to_scan_details_embed(
+                scan_details_embed,
+                config_filename,
+                config_url,
+            )
+            edit_successful = await self.edit_menu_scan_details_embed(
+                menu,
+                menu_start_result,
+                scan_details_embed,
+            )
+            if not edit_successful:
+                await self.send_scan_details_update_fallback(
+                    ctx,
+                    EXTRACTED_CONFIG_FIELD,
+                    config_filename,
+                    config_url,
+                )
+            return True
+
+        if config_content and config_extract_decision is False:
+            self.add_config_status_to_scan_details_embed(scan_details_embed, CONFIG_SKIPPED_VALUE)
+            await self.edit_menu_scan_details_embed(menu, menu_start_result, scan_details_embed)
+            return False
+
+        # Call the send_config_content function to extract extracted config.yml file.
+        # Archive scans prompt once, then reuse that decision for remaining logs.
+        if config_content and prompt_for_config:
             # There is extracted content for config.yml
             prompt_embed = discord.Embed(
                 title="Extract config.yml?",
@@ -4508,11 +4800,13 @@ class RedBotCogLogscan(commands.Cog):
                             config_url,
                         )
                     await prompt_message.delete()
+                    return True
                 else:
                     # User doesn't want to extract the .yml file
                     self.add_config_status_to_scan_details_embed(scan_details_embed, CONFIG_SKIPPED_VALUE)
                     await self.edit_menu_scan_details_embed(menu, menu_start_result, scan_details_embed)
                     await prompt_message.delete()
+                    return False
 
             except asyncio.TimeoutError:
                 config_filename, config_url = await self.send_config_content(
@@ -4540,6 +4834,9 @@ class RedBotCogLogscan(commands.Cog):
                         config_url,
                     )
                 await prompt_message.delete()
+                return True
+
+        return config_extract_decision
 
     @commands.hybrid_command(name="logscan")
     @app_commands.describe(message_link="The discord message link you want to scan.")
@@ -4598,6 +4895,19 @@ class RedBotCogLogscan(commands.Cog):
             if message_link is not None:
                 try:
                     linked_message = message_link
+                    if len(linked_message.attachments) > 1:
+                        if bad_channel:
+                            await ctx.reply(bad_channel_msg, delete_after=20, suppress_embeds=True)
+                            return
+
+                        await self.process_attachment_batch(
+                            ctx,
+                            linked_message.attachments,
+                            linked_message,
+                            invoker=ctx.author,
+                        )
+                        return
+
                     attachment = linked_message.attachments[0]
                     resolved_author, resolved_filename = self.resolve_attachment_provenance(
                         linked_message.author,
@@ -4761,6 +5071,19 @@ class RedBotCogLogscan(commands.Cog):
         delete_source_message = False
 
         if message.attachments:
+            if len(message.attachments) > 1:
+                if bad_channel:
+                    await message.reply(bad_channel_msg, delete_after=20, suppress_embeds=True)
+                    return
+
+                await self.process_attachment_batch(
+                    ctx,
+                    message.attachments,
+                    message,
+                    delete_source_message=delete_source_message,
+                )
+                return
+
             for attachment in message.attachments:
                 resolved_author, resolved_filename = self.resolve_attachment_provenance(
                     message.author,
