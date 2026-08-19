@@ -56,6 +56,7 @@ SCAN_REQUESTED_BY_FIELD = "Scan requested by"
 ORIGINAL_UPLOADER_MENTION_FIELD = "Original uploader mention"
 ORIGINAL_MESSAGE_FIELD = "Original message"
 TRACKED_LOG_FIELD = "Tracked log"
+EXTRACTED_CONFIG_FIELD = "Extracted config.yml"
 TOC_FIELD = "Table of Contents"
 ORIGINAL_MESSAGE_AUTHOR_LABEL = "Original message by"
 PRESERVED_UPLOAD_FOOTER = "Original message remains available for native Discord replies."
@@ -3039,11 +3040,14 @@ class RedBotCogLogscan(commands.Cog):
                 linked_message_author,
                 source_filename=source_filename,
             )
-            await ctx.send(file=discord.File(io.BytesIO(config_content_str.encode("utf-8")),
+            config_message = await ctx.send(file=discord.File(io.BytesIO(config_content_str.encode("utf-8")),
                                              filename=parsed_filename))
+            config_url = self.get_uploaded_attachment_url(config_message, parsed_filename)
+            return parsed_filename, config_url
         else:
             mylogger.info("Config content is empty or invalid.")
             await ctx.send("💥An error occurred while processing the attachment. Config content is empty or invalid.💥")
+            return None, None
 
     async def send_tracked_attachment_copy(
         self,
@@ -3485,7 +3489,7 @@ class RedBotCogLogscan(commands.Cog):
                     source_author = SimpleNamespace(display_name=field_value, name=field_value, id=0)
                     provenance_found = True
                 elif field_name in ("original filename", ORIGINAL_LOG_FILENAME_FIELD.lower()) and field_value:
-                    source_filename = field_value
+                    source_filename = self.extract_markdown_link_label(field_value)
                     provenance_found = True
 
         if not provenance_found:
@@ -3500,6 +3504,21 @@ class RedBotCogLogscan(commands.Cog):
                 source_filename = f"{tracking_components['base']}{extension}"
 
         return source_author, source_filename
+
+    def extract_markdown_link_label(self, value):
+        markdown_link_match = re.match(r"^\[([^\]]+)\]\([^)]+\)$", value.strip())
+        if markdown_link_match:
+            return markdown_link_match.group(1).strip()
+        return value
+
+    def format_attachment_link_value(self, filename, url):
+        if url:
+            return self.truncate_discord_message_content(
+                f"[{filename}]({url})",
+                DISCORD_EMBED_FIELD_VALUE_LIMIT,
+            )
+
+        return self.truncate_discord_message_content(filename, DISCORD_EMBED_FIELD_VALUE_LIMIT)
 
     def build_tracked_filename(self, filename, source_author, unique_seed):
         existing_tracking_stem = self.extract_existing_tracking_stem(filename)
@@ -3660,7 +3679,7 @@ class RedBotCogLogscan(commands.Cog):
         )
         embed.add_field(
             name=ORIGINAL_LOG_FILENAME_FIELD,
-            value=self.truncate_discord_message_content(original_filename, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+            value=self.format_attachment_link_value(original_filename, getattr(attachment, "url", None)),
             inline=True,
         )
         if invoker:
@@ -3698,21 +3717,42 @@ class RedBotCogLogscan(commands.Cog):
         tracked_url,
     ):
         if tracked_url:
-            field_value = f"[{tracked_filename}]({tracked_url})"
-            toc_field_index = self.get_embed_field_index(scan_details_embed, TOC_FIELD)
-            if toc_field_index is None or not hasattr(scan_details_embed, "insert_field_at"):
-                scan_details_embed.add_field(
-                    name=TRACKED_LOG_FIELD,
-                    value=field_value,
-                    inline=False,
-                )
-            else:
-                scan_details_embed.insert_field_at(
-                    toc_field_index,
-                    name=TRACKED_LOG_FIELD,
-                    value=field_value,
-                    inline=False,
-                )
+            self.add_scan_details_field_before_toc(
+                scan_details_embed,
+                TRACKED_LOG_FIELD,
+                f"[{tracked_filename}]({tracked_url})",
+                inline=False,
+            )
+
+    def add_config_link_to_scan_details_embed(
+        self,
+        scan_details_embed,
+        config_filename,
+        config_url,
+    ):
+        if config_url:
+            self.add_scan_details_field_before_toc(
+                scan_details_embed,
+                EXTRACTED_CONFIG_FIELD,
+                f"[{config_filename}]({config_url})",
+                inline=False,
+            )
+
+    def add_scan_details_field_before_toc(self, scan_details_embed, name, value, inline=False):
+        toc_field_index = self.get_embed_field_index(scan_details_embed, TOC_FIELD)
+        if toc_field_index is None or not hasattr(scan_details_embed, "insert_field_at"):
+            scan_details_embed.add_field(
+                name=name,
+                value=self.truncate_discord_message_content(value, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+                inline=inline,
+            )
+        else:
+            scan_details_embed.insert_field_at(
+                toc_field_index,
+                name=name,
+                value=self.truncate_discord_message_content(value, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+                inline=inline,
+            )
 
     def get_embed_field_index(self, embed, field_name):
         for index, field in enumerate(getattr(embed, "fields", [])):
@@ -4238,6 +4278,7 @@ class RedBotCogLogscan(commands.Cog):
 
         menu.embed = recommendations_embed  # Set the menu's embed to the recommendations_embed
 
+        menu_start_result = None
         try:
             # Check the type of ctx and use the appropriate method to start the menu
             mylogger.info(f"STANDARD: Starting menu.")
@@ -4290,26 +4331,38 @@ class RedBotCogLogscan(commands.Cog):
 
                 if str(reaction.emoji) == "✅":
                     # User wants to extract the .yml file
-                    await self.send_config_content(
+                    config_filename, config_url = await self.send_config_content(
                         ctx,
                         linked_message_author,
                         config_content,
                         attachment,
                         source_filename=source_filename,
                     )
+                    self.add_config_link_to_scan_details_embed(
+                        scan_details_embed,
+                        config_filename,
+                        config_url,
+                    )
+                    await self.edit_menu_scan_details_embed(menu, menu_start_result, scan_details_embed)
                     await prompt_message.delete()
                 else:
                     # User doesn't want to extract the .yml file
                     await prompt_message.delete()
 
             except asyncio.TimeoutError:
-                await self.send_config_content(
+                config_filename, config_url = await self.send_config_content(
                     ctx,
                     linked_message_author,
                     config_content,
                     attachment,
                     source_filename=source_filename,
                 )
+                self.add_config_link_to_scan_details_embed(
+                    scan_details_embed,
+                    config_filename,
+                    config_url,
+                )
+                await self.edit_menu_scan_details_embed(menu, menu_start_result, scan_details_embed)
                 await prompt_message.delete()
 
     @commands.hybrid_command(name="logscan")
