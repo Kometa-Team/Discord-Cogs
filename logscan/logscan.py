@@ -4178,7 +4178,11 @@ class RedBotCogLogscan(commands.Cog):
         # Call the send_completion_message function
         # await self.send_completion_message(ctx, attachment)
 
-        if delete_source_message and source_message is not None:
+        if (
+            delete_source_message
+            and source_message is not None
+            and self.is_help_forum_starter_message(source_message)
+        ):
             try:
                 await source_message.delete()
                 mylogger.info(
@@ -4434,6 +4438,8 @@ class RedBotCogLogscan(commands.Cog):
                 bad_channel = True
                 mylogger.info("Message received in a channel that is not allowed. Aborting.")
 
+        delete_source_message = self.is_help_forum_starter_message(message)
+
         if message.attachments:
             for attachment in message.attachments:
                 resolved_author, resolved_filename = self.resolve_attachment_provenance(
@@ -4473,7 +4479,7 @@ class RedBotCogLogscan(commands.Cog):
                                         content,
                                         content_bytes,
                                         source_filename=resolved_filename,
-                                        delete_source_message=True,
+                                        delete_source_message=delete_source_message,
                                         source_message=message,
                                     )
                             else:
@@ -4510,7 +4516,7 @@ class RedBotCogLogscan(commands.Cog):
                                 content,
                                 content_bytes,
                                 source_filename=resolved_filename,
-                                delete_source_message=True,
+                                delete_source_message=delete_source_message,
                                 source_message=message,
                             )
                     else:
