@@ -3085,7 +3085,8 @@ class RedBotCogLogscan(commands.Cog):
             source_filename=source_filename,
             preserved_source_message=preserved_source_message,
         )
-        await ctx.send(embed=tracking_embed, file=tracked_file)
+        sent_message = await ctx.send(embed=tracking_embed, file=tracked_file)
+        await self.add_tracked_attachment_link(sent_message, tracking_embed, tracked_filename)
         return tracked_filename
 
     def create_plex_config_pages(self, plex_config_sections, incomplete_message, message):
@@ -3610,6 +3611,32 @@ class RedBotCogLogscan(commands.Cog):
             inline=True,
         )
         return embed
+
+    async def add_tracked_attachment_link(self, sent_message, tracking_embed, tracked_filename):
+        tracked_attachment = next(
+            (
+                attachment
+                for attachment in getattr(sent_message, "attachments", [])
+                if attachment.filename == tracked_filename
+            ),
+            None,
+        )
+        attachment_url = getattr(tracked_attachment, "url", None)
+        if not attachment_url:
+            return
+
+        tracking_embed.add_field(
+            name="Tracked file",
+            value=f"[{tracked_filename}]({attachment_url})",
+            inline=False,
+        )
+
+        try:
+            await sent_message.edit(embed=tracking_embed)
+        except discord.HTTPException as e:
+            mylogger.warning(
+                f"Failed to add tracked attachment link to message {getattr(sent_message, 'id', 'unknown')}: {e}"
+            )
 
     async def delete_tracked_source_message(self, source_message):
         try:
