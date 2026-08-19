@@ -48,18 +48,17 @@ NOPARSE_COMMAND = "!noparse"
 DISCORD_MESSAGE_CONTENT_LIMIT = 2000
 DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
 DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
-DISCORD_FILES_PER_MESSAGE_LIMIT = 10
 SCAN_DETAILS_TITLE = "Scan Details"
 ORIGINAL_MESSAGE_TEXT_LABEL = "Original message text"
 ORIGINAL_UPLOADER_FIELD = "Original uploader"
 ORIGINAL_LOG_FILENAME_FIELD = "Original log filename"
 SCAN_REQUESTED_BY_FIELD = "Scan requested by"
 ORIGINAL_UPLOADER_MENTION_FIELD = "Original uploader mention"
-PRESERVED_ATTACHMENTS_FIELD = "Preserved attachments"
+ORIGINAL_MESSAGE_FIELD = "Original message"
 TRACKED_LOG_FIELD = "Tracked log"
+TOC_FIELD = "Table of Contents"
 ORIGINAL_MESSAGE_AUTHOR_LABEL = "Original message by"
-PRESERVED_ATTACHMENTS_MESSAGE = "Preserved attachments from the original message."
-PRESERVED_UPLOAD_FOOTER = "Original message and attachments preserved before removing the untracked upload."
+PRESERVED_UPLOAD_FOOTER = "Original message remains available for native Discord replies."
 # 1006644783743258635 #kometa-help
 # 1141467174570049696 #luma-tests-103
 # 1100494390071410798 #bot-spam
@@ -3052,7 +3051,6 @@ class RedBotCogLogscan(commands.Cog):
         linked_message_author,
         attachment,
         source_filename=None,
-        preserved_source_message=None,
         tracked_filename=None,
     ):
         if tracked_filename is None:
@@ -3062,14 +3060,9 @@ class RedBotCogLogscan(commands.Cog):
                 source_filename=source_filename,
             )
         tracked_file = await attachment.to_file(filename=tracked_filename)
-        preserved_links = await self.send_preserved_source_attachments(
-            ctx,
-            preserved_source_message,
-            attachment,
-        )
         tracked_message = await ctx.send(file=tracked_file)
         tracked_url = self.get_uploaded_attachment_url(tracked_message, tracked_filename)
-        return tracked_filename, tracked_url, preserved_links
+        return tracked_filename, tracked_url
 
     def create_plex_config_pages(self, plex_config_sections, incomplete_message, message):
         # Initialize server_icon_url to None
@@ -3285,23 +3278,31 @@ class RedBotCogLogscan(commands.Cog):
         if not scan_details_embed or not toc_entries:
             return
 
-        toc_string = "\n".join(
-            f"`Page {str(entry['page']).zfill(2)}:` {entry['name']}" for entry in toc_entries
-        )
-        toc_block = f"Table of Contents:\n{toc_string}"
-        description = scan_details_embed.description or ""
-        separator = "\n\n" if description else ""
-        max_description_length = DISCORD_EMBED_DESCRIPTION_LIMIT - len(separator) - len(toc_block)
+        toc_chunks = []
+        current_chunk = ""
+        for entry in toc_entries:
+            toc_line = f"`Page {str(entry['page']).zfill(2)}:` {entry['name']}"
+            if len(toc_line) > DISCORD_EMBED_FIELD_VALUE_LIMIT:
+                toc_line = self.truncate_discord_message_content(toc_line, DISCORD_EMBED_FIELD_VALUE_LIMIT)
 
-        if max_description_length < 1:
-            scan_details_embed.description = self.truncate_discord_message_content(
-                toc_block,
-                DISCORD_EMBED_DESCRIPTION_LIMIT,
+            separator = "\n" if current_chunk else ""
+            candidate_chunk = f"{current_chunk}{separator}{toc_line}"
+            if len(candidate_chunk) > DISCORD_EMBED_FIELD_VALUE_LIMIT:
+                if current_chunk:
+                    toc_chunks.append(current_chunk)
+                current_chunk = toc_line
+            else:
+                current_chunk = candidate_chunk
+
+        if current_chunk:
+            toc_chunks.append(current_chunk)
+
+        for index, toc_chunk in enumerate(toc_chunks):
+            scan_details_embed.add_field(
+                name=TOC_FIELD if index == 0 else f"{TOC_FIELD} continued",
+                value=toc_chunk,
+                inline=False,
             )
-            return
-
-        description = self.truncate_discord_message_content(description, max_description_length)
-        scan_details_embed.description = f"{description}{separator}{toc_block}" if description else toc_block
 
     def create_people_posters_embed(self, ctx, found_items, not_found_names, not_found_names_with_url):
         target_thread = self.bot.get_channel(target_thread_id)
@@ -3594,13 +3595,12 @@ class RedBotCogLogscan(commands.Cog):
         invoker=None,
         tracked_filename=None,
         tracked_url=None,
-        preserved_links=None,
     ):
         original_uploader = self.get_source_display_name(source_author) or "Unknown"
         original_filename = source_filename or attachment.filename
         preserved_content = None
 
-        if preserved_source_message and self.is_help_forum_thread_message(preserved_source_message):
+        if preserved_source_message:
             preserved_content = (getattr(preserved_source_message, "content", None) or "").strip()
 
         if preserved_content:
@@ -3645,6 +3645,13 @@ class RedBotCogLogscan(commands.Cog):
                 ),
                 inline=True,
             )
+            original_message_url = getattr(preserved_source_message, "jump_url", None)
+            if original_message_url:
+                embed.add_field(
+                    name=ORIGINAL_MESSAGE_FIELD,
+                    value=f"[Open original message]({original_message_url})",
+                    inline=True,
+                )
 
         embed.add_field(
             name=ORIGINAL_UPLOADER_FIELD,
@@ -3665,12 +3672,6 @@ class RedBotCogLogscan(commands.Cog):
                 ),
                 inline=True,
             )
-        if preserved_links:
-            embed.add_field(
-                name=PRESERVED_ATTACHMENTS_FIELD,
-                value=self.format_attachment_links(preserved_links),
-                inline=False,
-            )
         if tracked_url:
             embed.add_field(
                 name=TRACKED_LOG_FIELD,
@@ -3678,55 +3679,6 @@ class RedBotCogLogscan(commands.Cog):
                 inline=False,
             )
         return embed
-
-    def is_spoiler_attachment(self, attachment):
-        is_spoiler = getattr(attachment, "is_spoiler", None)
-        if callable(is_spoiler):
-            return is_spoiler()
-        return bool(is_spoiler)
-
-    async def send_preserved_source_attachments(self, ctx, source_message, processed_attachment):
-        if not source_message:
-            return []
-
-        preserved_files = []
-        for source_attachment in getattr(source_message, "attachments", []):
-            if getattr(source_attachment, "id", None) == getattr(processed_attachment, "id", None):
-                continue
-
-            try:
-                preserved_files.append(
-                    await source_attachment.to_file(
-                        filename=source_attachment.filename,
-                        spoiler=self.is_spoiler_attachment(source_attachment),
-                    )
-                )
-            except Exception as e:
-                mylogger.warning(
-                    f"Failed to prepare preserved attachment "
-                    f"{getattr(source_attachment, 'filename', 'unknown')}: {e}"
-                )
-
-        preserved_links = []
-        for index in range(0, len(preserved_files), DISCORD_FILES_PER_MESSAGE_LIMIT):
-            file_batch = preserved_files[index:index + DISCORD_FILES_PER_MESSAGE_LIMIT]
-            try:
-                sent_message = await ctx.send(PRESERVED_ATTACHMENTS_MESSAGE, files=file_batch)
-            except discord.HTTPException as e:
-                mylogger.warning(f"Failed to send preserved attachment batch: {e}")
-                continue
-
-            for sent_attachment in getattr(sent_message, "attachments", []):
-                attachment_url = getattr(sent_attachment, "url", None)
-                if attachment_url:
-                    preserved_links.append((sent_attachment.filename, attachment_url))
-
-        return preserved_links
-
-    def format_attachment_links(self, attachment_links):
-        lines = [f"[{filename}]({url})" for filename, url in attachment_links]
-        value = "\n".join(lines)
-        return self.truncate_discord_message_content(value, DISCORD_EMBED_FIELD_VALUE_LIMIT)
 
     def get_uploaded_attachment_url(self, tracked_message, tracked_filename):
         tracked_attachment = next(
@@ -3744,20 +3696,29 @@ class RedBotCogLogscan(commands.Cog):
         scan_details_embed,
         tracked_filename,
         tracked_url,
-        preserved_links,
     ):
-        if preserved_links:
-            scan_details_embed.add_field(
-                name=PRESERVED_ATTACHMENTS_FIELD,
-                value=self.format_attachment_links(preserved_links),
-                inline=False,
-            )
         if tracked_url:
-            scan_details_embed.add_field(
-                name=TRACKED_LOG_FIELD,
-                value=f"[{tracked_filename}]({tracked_url})",
-                inline=False,
-            )
+            field_value = f"[{tracked_filename}]({tracked_url})"
+            toc_field_index = self.get_embed_field_index(scan_details_embed, TOC_FIELD)
+            if toc_field_index is None or not hasattr(scan_details_embed, "insert_field_at"):
+                scan_details_embed.add_field(
+                    name=TRACKED_LOG_FIELD,
+                    value=field_value,
+                    inline=False,
+                )
+            else:
+                scan_details_embed.insert_field_at(
+                    toc_field_index,
+                    name=TRACKED_LOG_FIELD,
+                    value=field_value,
+                    inline=False,
+                )
+
+    def get_embed_field_index(self, embed, field_name):
+        for index, field in enumerate(getattr(embed, "fields", [])):
+            if getattr(field, "name", None) == field_name:
+                return index
+        return None
 
     async def edit_menu_scan_details_embed(self, menu, menu_start_result, scan_details_embed):
         menu_message = menu_start_result
@@ -4022,7 +3983,7 @@ class RedBotCogLogscan(commands.Cog):
         response_embed.add_field(name="Yes", value="Process and post recommendations.", inline=True)
         response_embed.add_field(
             name="No",
-            value=f"Skip this upload. Default after {GLOBAL_TIMEOUT} seconds.",
+            value=f"Skip this upload. Default is Yes after {GLOBAL_TIMEOUT} seconds.",
             inline=True,
         )
 
@@ -4056,7 +4017,7 @@ class RedBotCogLogscan(commands.Cog):
                 await sent_msg.clear_reactions()  # Clear reactions
             except discord.Forbidden:
                 pass  # If the bot doesn't have permission to manage messages
-            return "❌", None  # Return "❌" and None if timeout occurs
+            return "✅", ctx.author  # Default to processing the log on timeout
         finally:
             review_embed = discord.Embed(
                 description=f"Use `/logscan <message_link>` or `!logscan <message_link>` to scan another log.",
@@ -4105,7 +4066,7 @@ class RedBotCogLogscan(commands.Cog):
         # mylogger.info(f"Summary Lines: {summary_lines}")
 
         preserved_source_message = None
-        if source_message is not None and self.is_help_forum_thread_message(source_message):
+        if source_message is not None:
             preserved_source_message = source_message
 
         tracked_filename = self.build_attachment_tracking_name(
@@ -4282,19 +4243,17 @@ class RedBotCogLogscan(commands.Cog):
             mylogger.info(f"STANDARD: Starting menu.")
             menu_start_result = await menu.start(ctx)  # Start the menu for regular messages
 
-            _, tracked_url, preserved_links = await self.send_tracked_attachment_copy(
+            _, tracked_url = await self.send_tracked_attachment_copy(
                 ctx,
                 linked_message_author,
                 attachment,
                 source_filename=source_filename,
-                preserved_source_message=preserved_source_message,
                 tracked_filename=tracked_filename,
             )
             self.add_attachment_links_to_scan_details_embed(
                 scan_details_embed,
                 tracked_filename,
                 tracked_url,
-                preserved_links,
             )
             await self.edit_menu_scan_details_embed(menu, menu_start_result, scan_details_embed)
 
@@ -4308,12 +4267,12 @@ class RedBotCogLogscan(commands.Cog):
         if config_content:
             # There is extracted content for config.yml
             prompt_embed = discord.Embed(
-                title="Extract File?",
-                description="Do you want to see the extracted config.yml file?",
+                title="Extract config.yml?",
+                description=f"Default is Yes after {CONFIG_MENU_TIMEOUT} seconds.",
                 color=discord.Color.blurple()
             )
             prompt_embed.add_field(name="Yes", value="Extract the file", inline=True)
-            prompt_embed.add_field(name=f"No (**Default after {CONFIG_MENU_TIMEOUT} seconds**)",
+            prompt_embed.add_field(name="No",
                                    value=f"Don't extract file", inline=True)
 
             prompt_message = await ctx.send(embed=prompt_embed)
@@ -4344,7 +4303,13 @@ class RedBotCogLogscan(commands.Cog):
                     await prompt_message.delete()
 
             except asyncio.TimeoutError:
-                # User didn't respond within 30 seconds, delete the prompt message
+                await self.send_config_content(
+                    ctx,
+                    linked_message_author,
+                    config_content,
+                    attachment,
+                    source_filename=source_filename,
+                )
                 await prompt_message.delete()
 
     @commands.hybrid_command(name="logscan")
