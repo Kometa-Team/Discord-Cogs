@@ -45,6 +45,7 @@ GLOBAL_TIMEOUT = 180
 MENU_TIMEOUT = 3600
 CONFIG_MENU_TIMEOUT = 30
 NOPARSE_COMMAND = "!noparse"
+DISCORD_MESSAGE_CONTENT_LIMIT = 2000
 # 1006644783743258635 #kometa-help
 # 1141467174570049696 #luma-tests-103
 # 1100494390071410798 #bot-spam
@@ -3062,7 +3063,14 @@ class RedBotCogLogscan(commands.Cog):
             mylogger.info("Config content is empty or invalid.")
             await ctx.send("💥An error occurred while processing the attachment. Config content is empty or invalid.💥")
 
-    async def send_tracked_attachment_copy(self, ctx, linked_message_author, attachment, source_filename=None):
+    async def send_tracked_attachment_copy(
+        self,
+        ctx,
+        linked_message_author,
+        attachment,
+        source_filename=None,
+        preserved_source_content=None,
+    ):
         tracked_filename = self.build_attachment_tracking_name(
             attachment,
             linked_message_author,
@@ -3073,6 +3081,7 @@ class RedBotCogLogscan(commands.Cog):
             attachment,
             linked_message_author,
             source_filename=source_filename,
+            preserved_source_content=preserved_source_content,
         )
         await ctx.send(provenance_note, file=tracked_file)
         return tracked_filename
@@ -3501,14 +3510,65 @@ class RedBotCogLogscan(commands.Cog):
         tracked_base_name, _ = self.split_filename(tracked_filename)
         return f"{tracked_base_name}_config.yml"
 
-    def build_provenance_note(self, attachment, source_author, source_filename=None):
+    def truncate_discord_message_content(self, content, max_length=DISCORD_MESSAGE_CONTENT_LIMIT):
+        if len(content) <= max_length:
+            return content
+        if max_length <= 3:
+            return content[:max_length]
+        return content[:max_length - 3].rstrip() + "..."
+
+    def is_help_forum_starter_message(self, message):
+        channel = getattr(message, "channel", None)
+        if not isinstance(channel, discord.Thread):
+            return False
+
+        parent = getattr(channel, "parent", None)
+        if not parent or getattr(parent, "id", None) != ALLOWED_HELP:
+            return False
+
+        if getattr(message, "id", None) == getattr(channel, "id", None):
+            return True
+
+        starter_message = getattr(channel, "starter_message", None)
+        if starter_message and getattr(starter_message, "id", None) == getattr(message, "id", None):
+            return True
+
+        starter_message_id = getattr(channel, "starter_message_id", None)
+        return starter_message_id is not None and starter_message_id == getattr(message, "id", None)
+
+    def build_preserved_original_post_note(self, message):
+        if not message or not self.is_help_forum_starter_message(message):
+            return None
+
+        original_content = (getattr(message, "content", None) or "").strip()
+        if not original_content:
+            return None
+
+        original_author = self.get_source_display_name(getattr(message, "author", None))
+        return f"Original post by {original_author}:\n{original_content}"
+
+    def build_provenance_note(self, attachment, source_author, source_filename=None, preserved_source_content=None):
         original_uploader = self.get_source_display_name(source_author) or "Unknown"
         original_filename = source_filename or attachment.filename
-        return (
+        provenance_note = (
             f"Tracked copy for download.\n"
             f"Original uploader: {original_uploader}\n"
             f"Original filename: {original_filename}"
         )
+
+        if not preserved_source_content:
+            return provenance_note
+
+        separator = "\n\n"
+        max_preserved_length = DISCORD_MESSAGE_CONTENT_LIMIT - len(separator) - len(provenance_note)
+        if max_preserved_length <= 0:
+            return provenance_note
+
+        preserved_source_content = self.truncate_discord_message_content(
+            preserved_source_content,
+            max_preserved_length,
+        )
+        return f"{preserved_source_content}{separator}{provenance_note}"
 
     def create_unique_temp_dir(self, message_id):
         """
@@ -3835,11 +3895,16 @@ class RedBotCogLogscan(commands.Cog):
         # mylogger.info(f"Summary Lines: {summary_lines}")
 
         # Call the create_user_info_embed method
+        preserved_source_content = None
+        if delete_source_message and source_message is not None:
+            preserved_source_content = self.build_preserved_original_post_note(source_message)
+
         tracked_filename = await self.send_tracked_attachment_copy(
             ctx,
             linked_message_author,
             attachment,
             source_filename=source_filename,
+            preserved_source_content=preserved_source_content,
         )
         user_info_embed = self.create_user_info_embed(
             linked_message_author,
