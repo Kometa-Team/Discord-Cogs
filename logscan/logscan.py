@@ -48,6 +48,15 @@ NOPARSE_COMMAND = "!noparse"
 DISCORD_MESSAGE_CONTENT_LIMIT = 2000
 DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
 DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
+DISCORD_FILES_PER_MESSAGE_LIMIT = 10
+TRACKED_UPLOAD_TITLE = "Preserved log upload"
+ORIGINAL_UPLOADER_FIELD = "Original uploader"
+ORIGINAL_LOG_FILENAME_FIELD = "Original log filename"
+PRESERVED_ATTACHMENTS_FIELD = "Preserved attachments"
+TRACKED_LOG_FIELD = "Tracked log"
+ORIGINAL_MESSAGE_AUTHOR_LABEL = "Original message by"
+PRESERVED_ATTACHMENTS_MESSAGE = "Preserved attachments from the original message."
+PRESERVED_UPLOAD_FOOTER = "Original message and attachments preserved before removing the untracked upload."
 # 1006644783743258635 #kometa-help
 # 1141467174570049696 #luma-tests-103
 # 1100494390071410798 #bot-spam
@@ -3085,8 +3094,20 @@ class RedBotCogLogscan(commands.Cog):
             source_filename=source_filename,
             preserved_source_message=preserved_source_message,
         )
-        sent_message = await ctx.send(embed=tracking_embed, file=tracked_file)
-        await self.add_tracked_attachment_link(sent_message, tracking_embed, tracked_filename)
+        embed_message = await ctx.send(embed=tracking_embed)
+        preserved_links = await self.send_preserved_source_attachments(
+            ctx,
+            preserved_source_message,
+            attachment,
+        )
+        tracked_message = await ctx.send(file=tracked_file)
+        await self.add_attachment_link_fields(
+            embed_message,
+            tracking_embed,
+            tracked_filename,
+            tracked_message,
+            preserved_links=preserved_links,
+        )
         return tracked_filename
 
     def create_plex_config_pages(self, plex_config_sections, incomplete_message, message):
@@ -3473,9 +3494,9 @@ class RedBotCogLogscan(commands.Cog):
                 field_name = (getattr(field, "name", "") or "").strip().lower()
                 field_value = (getattr(field, "value", "") or "").strip().strip("`")
 
-                if field_name == "original uploader" and field_value:
+                if field_name == ORIGINAL_UPLOADER_FIELD.lower() and field_value:
                     source_author = SimpleNamespace(display_name=field_value, name=field_value, id=0)
-                elif field_name == "original filename" and field_value:
+                elif field_name in ("original filename", ORIGINAL_LOG_FILENAME_FIELD.lower()) and field_value:
                     source_filename = field_value
 
         return source_author, source_filename
@@ -3570,7 +3591,7 @@ class RedBotCogLogscan(commands.Cog):
 
         if preserved_content:
             embed = discord.Embed(
-                title="Tracked log copy",
+                title=TRACKED_UPLOAD_TITLE,
                 description=self.truncate_discord_message_content(
                     preserved_content,
                     DISCORD_EMBED_DESCRIPTION_LIMIT,
@@ -3579,63 +3600,124 @@ class RedBotCogLogscan(commands.Cog):
             )
         else:
             embed = discord.Embed(
-                title="Tracked log copy",
-                description="Tracked copy for download.",
+                title=TRACKED_UPLOAD_TITLE,
+                description="Original message had no text.",
                 color=discord.Color.blurple(),
             )
 
         if preserved_source_message:
             original_message_author = getattr(preserved_source_message, "author", None)
             original_message_author_name = self.get_source_display_name(original_message_author)
-            author_label = (
-                "Original post by"
-                if self.is_help_forum_starter_message(preserved_source_message)
-                else "Original message by"
-            )
             avatar_url = self.get_author_avatar_url(original_message_author)
             if avatar_url:
-                embed.set_author(name=f"{author_label} {original_message_author_name}", icon_url=avatar_url)
+                embed.set_author(
+                    name=f"{ORIGINAL_MESSAGE_AUTHOR_LABEL} {original_message_author_name}",
+                    icon_url=avatar_url,
+                )
                 embed.set_thumbnail(url=avatar_url)
             else:
-                embed.set_author(name=f"{author_label} {original_message_author_name}")
-            embed.set_footer(text="Original message preserved before removing the untracked upload.")
+                embed.set_author(name=f"{ORIGINAL_MESSAGE_AUTHOR_LABEL} {original_message_author_name}")
+            embed.set_footer(text=PRESERVED_UPLOAD_FOOTER)
 
         embed.add_field(
-            name="Original uploader",
+            name=ORIGINAL_UPLOADER_FIELD,
             value=self.truncate_discord_message_content(original_uploader, DISCORD_EMBED_FIELD_VALUE_LIMIT),
             inline=True,
         )
         embed.add_field(
-            name="Original filename",
+            name=ORIGINAL_LOG_FILENAME_FIELD,
             value=self.truncate_discord_message_content(original_filename, DISCORD_EMBED_FIELD_VALUE_LIMIT),
             inline=True,
         )
         return embed
 
-    async def add_tracked_attachment_link(self, sent_message, tracking_embed, tracked_filename):
+    def is_spoiler_attachment(self, attachment):
+        is_spoiler = getattr(attachment, "is_spoiler", None)
+        if callable(is_spoiler):
+            return is_spoiler()
+        return bool(is_spoiler)
+
+    async def send_preserved_source_attachments(self, ctx, source_message, processed_attachment):
+        if not source_message:
+            return []
+
+        preserved_files = []
+        for source_attachment in getattr(source_message, "attachments", []):
+            if getattr(source_attachment, "id", None) == getattr(processed_attachment, "id", None):
+                continue
+
+            try:
+                preserved_files.append(
+                    await source_attachment.to_file(
+                        filename=source_attachment.filename,
+                        spoiler=self.is_spoiler_attachment(source_attachment),
+                    )
+                )
+            except Exception as e:
+                mylogger.warning(
+                    f"Failed to prepare preserved attachment "
+                    f"{getattr(source_attachment, 'filename', 'unknown')}: {e}"
+                )
+
+        preserved_links = []
+        for index in range(0, len(preserved_files), DISCORD_FILES_PER_MESSAGE_LIMIT):
+            file_batch = preserved_files[index:index + DISCORD_FILES_PER_MESSAGE_LIMIT]
+            try:
+                sent_message = await ctx.send(PRESERVED_ATTACHMENTS_MESSAGE, files=file_batch)
+            except discord.HTTPException as e:
+                mylogger.warning(f"Failed to send preserved attachment batch: {e}")
+                continue
+
+            for sent_attachment in getattr(sent_message, "attachments", []):
+                attachment_url = getattr(sent_attachment, "url", None)
+                if attachment_url:
+                    preserved_links.append((sent_attachment.filename, attachment_url))
+
+        return preserved_links
+
+    def format_attachment_links(self, attachment_links):
+        lines = [f"[{filename}]({url})" for filename, url in attachment_links]
+        value = "\n".join(lines)
+        return self.truncate_discord_message_content(value, DISCORD_EMBED_FIELD_VALUE_LIMIT)
+
+    async def add_attachment_link_fields(
+        self,
+        embed_message,
+        tracking_embed,
+        tracked_filename,
+        tracked_message,
+        *,
+        preserved_links=None,
+    ):
         tracked_attachment = next(
             (
                 attachment
-                for attachment in getattr(sent_message, "attachments", [])
+                for attachment in getattr(tracked_message, "attachments", [])
                 if attachment.filename == tracked_filename
             ),
             None,
         )
         attachment_url = getattr(tracked_attachment, "url", None)
-        if not attachment_url:
-            return
 
-        tracking_embed.add_field(
-            name="Tracked file",
-            value=f"[{tracked_filename}]({attachment_url})",
-            inline=False,
-        )
+        if preserved_links:
+            tracking_embed.add_field(
+                name=PRESERVED_ATTACHMENTS_FIELD,
+                value=self.format_attachment_links(preserved_links),
+                inline=False,
+            )
+
+        if attachment_url:
+            tracking_embed.add_field(
+                name=TRACKED_LOG_FIELD,
+                value=f"[{tracked_filename}]({attachment_url})",
+                inline=False,
+            )
 
         try:
-            await sent_message.edit(embed=tracking_embed)
+            await embed_message.edit(embed=tracking_embed)
         except discord.HTTPException as e:
             mylogger.warning(
-                f"Failed to add tracked attachment link to message {getattr(sent_message, 'id', 'unknown')}: {e}"
+                f"Failed to add attachment links to message {getattr(embed_message, 'id', 'unknown')}: {e}"
             )
 
     async def delete_tracked_source_message(self, source_message):
