@@ -4100,6 +4100,7 @@ class RedBotCogLogscan(commands.Cog):
         completed_count=0,
         failed_count=0,
         failed_files=None,
+        skipped_files=None,
     ):
         embed = discord.Embed(
             title="Archive Logscan Progress",
@@ -4127,6 +4128,16 @@ class RedBotCogLogscan(commands.Cog):
             embed.add_field(
                 name="Failed files",
                 value=self.truncate_discord_message_content(failed_text, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+                inline=False,
+            )
+
+        if skipped_files:
+            skipped_text = "\n".join(f"`{name}`: {reason}" for name, reason in skipped_files[:5])
+            if len(skipped_files) > 5:
+                skipped_text += f"\n...and {len(skipped_files) - 5} more."
+            embed.add_field(
+                name="Skipped file details",
+                value=self.truncate_discord_message_content(skipped_text, DISCORD_EMBED_FIELD_VALUE_LIMIT),
                 inline=False,
             )
 
@@ -4213,6 +4224,7 @@ class RedBotCogLogscan(commands.Cog):
         skipped_count=0,
         progress_message=None,
         failed_files=None,
+        skipped_files=None,
     ):
         color = discord.Color.green() if failed_count == 0 else discord.Color.orange()
         embed = discord.Embed(
@@ -4237,6 +4249,16 @@ class RedBotCogLogscan(commands.Cog):
                 inline=False,
             )
 
+        if skipped_files:
+            skipped_text = "\n".join(f"`{name}`: {reason}" for name, reason in skipped_files[:5])
+            if len(skipped_files) > 5:
+                skipped_text += f"\n...and {len(skipped_files) - 5} more."
+            embed.add_field(
+                name="Skipped file details",
+                value=self.truncate_discord_message_content(skipped_text, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+                inline=False,
+            )
+
         return embed
 
     async def send_progress_summary(
@@ -4251,6 +4273,7 @@ class RedBotCogLogscan(commands.Cog):
         skipped_count=0,
         progress_message=None,
         failed_files=None,
+        skipped_files=None,
     ):
         if previous_ticker_message:
             try:
@@ -4266,6 +4289,7 @@ class RedBotCogLogscan(commands.Cog):
             skipped_count=skipped_count,
             progress_message=progress_message,
             failed_files=failed_files,
+            skipped_files=skipped_files,
         )
         try:
             return await ctx.send(embed=embed)
@@ -4293,6 +4317,7 @@ class RedBotCogLogscan(commands.Cog):
                 len(valid_logs),
                 len(skipped_files),
                 status="Waiting for confirmation.",
+                skipped_files=skipped_files,
             )
         )
 
@@ -4305,6 +4330,7 @@ class RedBotCogLogscan(commands.Cog):
                     len(valid_logs),
                     len(skipped_files),
                     status="No valid Kometa logs found in this archive.",
+                    skipped_files=skipped_files,
                 ),
             )
             return
@@ -4320,6 +4346,7 @@ class RedBotCogLogscan(commands.Cog):
                     len(valid_logs),
                     len(skipped_files),
                     status="Archive scan skipped.",
+                    skipped_files=skipped_files,
                 ),
             )
             return
@@ -4343,6 +4370,7 @@ class RedBotCogLogscan(commands.Cog):
                     completed_count=completed_count,
                     failed_count=len(failed_files),
                     failed_files=failed_files,
+                    skipped_files=skipped_files,
                 ),
             )
             ticker_message = await self.refresh_progress_ticker(
@@ -4390,6 +4418,7 @@ class RedBotCogLogscan(commands.Cog):
             skipped_count=len(skipped_files),
             progress_message=status_message,
             failed_files=failed_files,
+            skipped_files=skipped_files,
         )
         await self.update_archive_status_message(
             status_message,
@@ -4402,6 +4431,7 @@ class RedBotCogLogscan(commands.Cog):
                 completed_count=completed_count,
                 failed_count=len(failed_files),
                 failed_files=failed_files,
+                skipped_files=skipped_files,
             ),
         )
 
@@ -4418,6 +4448,7 @@ class RedBotCogLogscan(commands.Cog):
         completed_count=0,
         failed_count=0,
         failed_files=None,
+        skipped_files=None,
     ):
         embed = discord.Embed(
             title="Attachment Logscan Progress",
@@ -4445,6 +4476,16 @@ class RedBotCogLogscan(commands.Cog):
             embed.add_field(
                 name="Failed files",
                 value=self.truncate_discord_message_content(failed_text, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+                inline=False,
+            )
+
+        if skipped_files:
+            skipped_text = "\n".join(f"`{name}`: {reason}" for name, reason in skipped_files[:5])
+            if len(skipped_files) > 5:
+                skipped_text += f"\n...and {len(skipped_files) - 5} more."
+            embed.add_field(
+                name="Skipped file details",
+                value=self.truncate_discord_message_content(skipped_text, DISCORD_EMBED_FIELD_VALUE_LIMIT),
                 inline=False,
             )
 
@@ -4532,6 +4573,7 @@ class RedBotCogLogscan(commands.Cog):
                 len(valid_logs),
                 len(skipped_files),
                 status="Waiting for confirmation.",
+                skipped_files=skipped_files,
             )
         )
 
@@ -4544,6 +4586,7 @@ class RedBotCogLogscan(commands.Cog):
                     len(valid_logs),
                     len(skipped_files),
                     status="No valid Kometa logs found in these attachments.",
+                    skipped_files=skipped_files,
                 ),
             )
             return
@@ -4559,6 +4602,7 @@ class RedBotCogLogscan(commands.Cog):
                     len(valid_logs),
                     len(skipped_files),
                     status="Attachment batch scan skipped.",
+                    skipped_files=skipped_files,
                 ),
             )
             return
@@ -4583,6 +4627,7 @@ class RedBotCogLogscan(commands.Cog):
                     completed_count=completed_count,
                     failed_count=len(failed_files),
                     failed_files=failed_files,
+                    skipped_files=skipped_files,
                 ),
             )
             ticker_message = await self.refresh_progress_ticker(
@@ -4631,6 +4676,7 @@ class RedBotCogLogscan(commands.Cog):
             skipped_count=len(skipped_files),
             progress_message=status_message,
             failed_files=failed_files,
+            skipped_files=skipped_files,
         )
         await self.update_archive_status_message(
             status_message,
@@ -4643,6 +4689,7 @@ class RedBotCogLogscan(commands.Cog):
                 completed_count=completed_count,
                 failed_count=len(failed_files),
                 failed_files=failed_files,
+                skipped_files=skipped_files,
             ),
         )
 
