@@ -50,6 +50,7 @@ DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
 DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
 DISCORD_FILES_PER_MESSAGE_LIMIT = 10
 SCAN_DETAILS_TITLE = "Scan Details"
+ORIGINAL_MESSAGE_TEXT_LABEL = "Original message text"
 ORIGINAL_UPLOADER_FIELD = "Original uploader"
 ORIGINAL_LOG_FILENAME_FIELD = "Original log filename"
 SCAN_REQUESTED_BY_FIELD = "Scan requested by"
@@ -3568,10 +3569,6 @@ class RedBotCogLogscan(commands.Cog):
         channel = getattr(message, "channel", None)
         return isinstance(channel, discord.Thread)
 
-    def has_user_written_content(self, message):
-        content = (getattr(message, "content", None) or "").strip()
-        return bool(content and content != NOPARSE_COMMAND)
-
     def get_author_avatar_url(self, author):
         display_avatar = getattr(author, "display_avatar", None)
         avatar = display_avatar or getattr(author, "avatar", None)
@@ -3607,11 +3604,15 @@ class RedBotCogLogscan(commands.Cog):
             preserved_content = (getattr(preserved_source_message, "content", None) or "").strip()
 
         if preserved_content:
+            original_message_header = f"**{ORIGINAL_MESSAGE_TEXT_LABEL}:**\n"
             embed = discord.Embed(
                 title=SCAN_DETAILS_TITLE,
-                description=self.truncate_discord_message_content(
-                    preserved_content,
-                    DISCORD_EMBED_DESCRIPTION_LIMIT,
+                description=(
+                    original_message_header
+                    + self.truncate_discord_message_content(
+                        preserved_content,
+                        DISCORD_EMBED_DESCRIPTION_LIMIT - len(original_message_header),
+                    )
                 ),
                 color=discord.Color.blurple(),
             )
@@ -3775,25 +3776,6 @@ class RedBotCogLogscan(commands.Cog):
         except discord.HTTPException as e:
             mylogger.warning(
                 f"Failed to update scan details page {getattr(menu_message, 'id', 'unknown')}: {e}"
-            )
-
-    async def delete_tracked_source_message(self, source_message):
-        try:
-            await source_message.delete()
-            mylogger.info(
-                f"Deleted original source message {source_message.id} after posting tracked attachment copy."
-            )
-        except discord.NotFound:
-            mylogger.info(
-                f"Original source message {getattr(source_message, 'id', 'unknown')} was already deleted."
-            )
-        except discord.Forbidden:
-            mylogger.warning(
-                f"Missing permission to delete original source message {getattr(source_message, 'id', 'unknown')}."
-            )
-        except discord.HTTPException as e:
-            mylogger.warning(
-                f"Failed to delete original source message {getattr(source_message, 'id', 'unknown')}: {e}"
             )
 
     def create_unique_temp_dir(self, message_id):
@@ -4316,13 +4298,6 @@ class RedBotCogLogscan(commands.Cog):
             )
             await self.edit_menu_scan_details_embed(menu, menu_start_result, scan_details_embed)
 
-            if (
-                delete_source_message
-                and source_message is not None
-                and self.is_help_forum_thread_message(source_message)
-            ):
-                await self.delete_tracked_source_message(source_message)
-
         except AttributeError as e:
             # Handle the AttributeError if needed
             mylogger.error(f"STANDARD: An error occurred while starting the menu. {e}")
@@ -4609,10 +4584,7 @@ class RedBotCogLogscan(commands.Cog):
                 bad_channel = True
                 mylogger.info("Message received in a channel that is not allowed. Aborting.")
 
-        delete_source_message = (
-            self.is_help_forum_thread_message(message)
-            and not self.has_user_written_content(message)
-        )
+        delete_source_message = False
 
         if message.attachments:
             for attachment in message.attachments:
