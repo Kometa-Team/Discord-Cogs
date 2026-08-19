@@ -53,8 +53,7 @@ SCAN_DETAILS_TITLE = "Scan Details"
 ORIGINAL_UPLOADER_FIELD = "Original uploader"
 ORIGINAL_LOG_FILENAME_FIELD = "Original log filename"
 SCAN_REQUESTED_BY_FIELD = "Scan requested by"
-REPLY_TO_FIELD = "Reply to"
-ORIGINAL_MESSAGE_FIELD = "Original message"
+ORIGINAL_UPLOADER_MENTION_FIELD = "Original uploader mention"
 PRESERVED_ATTACHMENTS_FIELD = "Preserved attachments"
 TRACKED_LOG_FIELD = "Tracked log"
 ORIGINAL_MESSAGE_AUTHOR_LABEL = "Original message by"
@@ -3569,6 +3568,10 @@ class RedBotCogLogscan(commands.Cog):
         channel = getattr(message, "channel", None)
         return isinstance(channel, discord.Thread)
 
+    def has_user_written_content(self, message):
+        content = (getattr(message, "content", None) or "").strip()
+        return bool(content and content != NOPARSE_COMMAND)
+
     def get_author_avatar_url(self, author):
         display_avatar = getattr(author, "display_avatar", None)
         avatar = display_avatar or getattr(author, "avatar", None)
@@ -3634,20 +3637,13 @@ class RedBotCogLogscan(commands.Cog):
                 embed.set_author(name=f"{ORIGINAL_MESSAGE_AUTHOR_LABEL} {original_message_author_name}")
             embed.set_footer(text=PRESERVED_UPLOAD_FOOTER)
             embed.add_field(
-                name=REPLY_TO_FIELD,
+                name=ORIGINAL_UPLOADER_MENTION_FIELD,
                 value=self.truncate_discord_message_content(
                     original_message_author_ref,
                     DISCORD_EMBED_FIELD_VALUE_LIMIT,
                 ),
                 inline=True,
             )
-            original_message_url = getattr(preserved_source_message, "jump_url", None)
-            if original_message_url:
-                embed.add_field(
-                    name=ORIGINAL_MESSAGE_FIELD,
-                    value=f"[Open original message]({original_message_url})",
-                    inline=True,
-                )
 
         embed.add_field(
             name=ORIGINAL_UPLOADER_FIELD,
@@ -4127,9 +4123,8 @@ class RedBotCogLogscan(commands.Cog):
         # mylogger.info(f"Summary Lines: {summary_lines}")
 
         preserved_source_message = None
-        if delete_source_message and source_message is not None:
-            if self.is_help_forum_thread_message(source_message):
-                preserved_source_message = source_message
+        if source_message is not None and self.is_help_forum_thread_message(source_message):
+            preserved_source_message = source_message
 
         tracked_filename = self.build_attachment_tracking_name(
             attachment,
@@ -4614,7 +4609,10 @@ class RedBotCogLogscan(commands.Cog):
                 bad_channel = True
                 mylogger.info("Message received in a channel that is not allowed. Aborting.")
 
-        delete_source_message = self.is_help_forum_thread_message(message)
+        delete_source_message = (
+            self.is_help_forum_thread_message(message)
+            and not self.has_user_written_content(message)
+        )
 
         if message.attachments:
             for attachment in message.attachments:
