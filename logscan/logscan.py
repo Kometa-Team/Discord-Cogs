@@ -3531,11 +3531,7 @@ class RedBotCogLogscan(commands.Cog):
 
     def is_help_forum_starter_message(self, message):
         channel = getattr(message, "channel", None)
-        if not isinstance(channel, discord.Thread):
-            return False
-
-        parent = getattr(channel, "parent", None)
-        if not parent or getattr(parent, "id", None) != ALLOWED_HELP:
+        if not self.is_help_forum_thread_message(message):
             return False
 
         if getattr(message, "id", None) == getattr(channel, "id", None):
@@ -3547,6 +3543,14 @@ class RedBotCogLogscan(commands.Cog):
 
         starter_message_id = getattr(channel, "starter_message_id", None)
         return starter_message_id is not None and starter_message_id == getattr(message, "id", None)
+
+    def is_help_forum_thread_message(self, message):
+        channel = getattr(message, "channel", None)
+        if not isinstance(channel, discord.Thread):
+            return False
+
+        parent = getattr(channel, "parent", None)
+        return bool(parent and getattr(parent, "id", None) == ALLOWED_HELP)
 
     def get_author_avatar_url(self, author):
         display_avatar = getattr(author, "display_avatar", None)
@@ -3564,7 +3568,7 @@ class RedBotCogLogscan(commands.Cog):
         original_filename = source_filename or attachment.filename
         preserved_content = None
 
-        if preserved_source_message and self.is_help_forum_starter_message(preserved_source_message):
+        if preserved_source_message and self.is_help_forum_thread_message(preserved_source_message):
             preserved_content = (getattr(preserved_source_message, "content", None) or "").strip()
 
         if preserved_content:
@@ -3576,20 +3580,27 @@ class RedBotCogLogscan(commands.Cog):
                 ),
                 color=discord.Color.blurple(),
             )
-            original_post_author = getattr(preserved_source_message, "author", None)
-            original_post_author_name = self.get_source_display_name(original_post_author)
-            avatar_url = self.get_author_avatar_url(original_post_author)
-            if avatar_url:
-                embed.set_author(name=f"Original post by {original_post_author_name}", icon_url=avatar_url)
-            else:
-                embed.set_author(name=f"Original post by {original_post_author_name}")
-            embed.set_footer(text="Original post preserved before removing the untracked upload.")
         else:
             embed = discord.Embed(
                 title="Tracked log copy",
                 description="Tracked copy for download.",
                 color=discord.Color.blurple(),
             )
+
+        if preserved_source_message:
+            original_message_author = getattr(preserved_source_message, "author", None)
+            original_message_author_name = self.get_source_display_name(original_message_author)
+            author_label = (
+                "Original post by"
+                if self.is_help_forum_starter_message(preserved_source_message)
+                else "Original message by"
+            )
+            avatar_url = self.get_author_avatar_url(original_message_author)
+            if avatar_url:
+                embed.set_author(name=f"{author_label} {original_message_author_name}", icon_url=avatar_url)
+            else:
+                embed.set_author(name=f"{author_label} {original_message_author_name}")
+            embed.set_footer(text="Original message preserved before removing the untracked upload.")
 
         embed.add_field(
             name="Original uploader",
@@ -3930,7 +3941,7 @@ class RedBotCogLogscan(commands.Cog):
         # Call the create_user_info_embed method
         preserved_source_message = None
         if delete_source_message and source_message is not None:
-            if self.is_help_forum_starter_message(source_message):
+            if self.is_help_forum_thread_message(source_message):
                 preserved_source_message = source_message
 
         tracked_filename = await self.send_tracked_attachment_copy(
@@ -4181,7 +4192,7 @@ class RedBotCogLogscan(commands.Cog):
         if (
             delete_source_message
             and source_message is not None
-            and self.is_help_forum_starter_message(source_message)
+            and self.is_help_forum_thread_message(source_message)
         ):
             try:
                 await source_message.delete()
@@ -4438,7 +4449,7 @@ class RedBotCogLogscan(commands.Cog):
                 bad_channel = True
                 mylogger.info("Message received in a channel that is not allowed. Aborting.")
 
-        delete_source_message = self.is_help_forum_starter_message(message)
+        delete_source_message = self.is_help_forum_thread_message(message)
 
         if message.attachments:
             for attachment in message.attachments:
