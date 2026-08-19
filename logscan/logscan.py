@@ -46,6 +46,8 @@ MENU_TIMEOUT = 3600
 CONFIG_MENU_TIMEOUT = 30
 NOPARSE_COMMAND = "!noparse"
 DISCORD_MESSAGE_CONTENT_LIMIT = 2000
+DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
+DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
 # 1006644783743258635 #kometa-help
 # 1141467174570049696 #luma-tests-103
 # 1100494390071410798 #bot-spam
@@ -3069,7 +3071,7 @@ class RedBotCogLogscan(commands.Cog):
         linked_message_author,
         attachment,
         source_filename=None,
-        preserved_source_content=None,
+        preserved_source_message=None,
     ):
         tracked_filename = self.build_attachment_tracking_name(
             attachment,
@@ -3077,13 +3079,13 @@ class RedBotCogLogscan(commands.Cog):
             source_filename=source_filename,
         )
         tracked_file = await attachment.to_file(filename=tracked_filename)
-        provenance_note = self.build_provenance_note(
+        tracking_embed = self.build_tracked_attachment_embed(
             attachment,
             linked_message_author,
             source_filename=source_filename,
-            preserved_source_content=preserved_source_content,
+            preserved_source_message=preserved_source_message,
         )
-        await ctx.send(provenance_note, file=tracked_file)
+        await ctx.send(embed=tracking_embed, file=tracked_file)
         return tracked_filename
 
     def create_plex_config_pages(self, plex_config_sections, incomplete_message, message):
@@ -3447,7 +3449,7 @@ class RedBotCogLogscan(commands.Cog):
             return None
         return f"{components['base']}_{components['author']}_{components['suffix']}"
 
-    def resolve_attachment_provenance(self, message_author, message_content, attachment):
+    def resolve_attachment_provenance(self, message_author, message_content, attachment, message_embeds=None):
         source_author = message_author
         source_filename = attachment.filename
 
@@ -3464,6 +3466,16 @@ class RedBotCogLogscan(commands.Cog):
                 original_filename = filename_match.group(1).strip()
                 if original_filename:
                     source_filename = original_filename
+
+        for embed in message_embeds or []:
+            for field in getattr(embed, "fields", []):
+                field_name = (getattr(field, "name", "") or "").strip().lower()
+                field_value = (getattr(field, "value", "") or "").strip().strip("`")
+
+                if field_name == "original uploader" and field_value:
+                    source_author = SimpleNamespace(display_name=field_value, name=field_value, id=0)
+                elif field_name == "original filename" and field_value:
+                    source_filename = field_value
 
         return source_author, source_filename
 
@@ -3536,39 +3548,60 @@ class RedBotCogLogscan(commands.Cog):
         starter_message_id = getattr(channel, "starter_message_id", None)
         return starter_message_id is not None and starter_message_id == getattr(message, "id", None)
 
-    def build_preserved_original_post_note(self, message):
-        if not message or not self.is_help_forum_starter_message(message):
-            return None
+    def get_author_avatar_url(self, author):
+        display_avatar = getattr(author, "display_avatar", None)
+        avatar = display_avatar or getattr(author, "avatar", None)
+        return getattr(avatar, "url", None)
 
-        original_content = (getattr(message, "content", None) or "").strip()
-        if not original_content:
-            return None
-
-        original_author = self.get_source_display_name(getattr(message, "author", None))
-        return f"Original post by {original_author}:\n{original_content}"
-
-    def build_provenance_note(self, attachment, source_author, source_filename=None, preserved_source_content=None):
+    def build_tracked_attachment_embed(
+        self,
+        attachment,
+        source_author,
+        source_filename=None,
+        preserved_source_message=None,
+    ):
         original_uploader = self.get_source_display_name(source_author) or "Unknown"
         original_filename = source_filename or attachment.filename
-        provenance_note = (
-            f"Tracked copy for download.\n"
-            f"Original uploader: {original_uploader}\n"
-            f"Original filename: {original_filename}"
+        preserved_content = None
+
+        if preserved_source_message and self.is_help_forum_starter_message(preserved_source_message):
+            preserved_content = (getattr(preserved_source_message, "content", None) or "").strip()
+
+        if preserved_content:
+            embed = discord.Embed(
+                title="Tracked log copy",
+                description=self.truncate_discord_message_content(
+                    preserved_content,
+                    DISCORD_EMBED_DESCRIPTION_LIMIT,
+                ),
+                color=discord.Color.blurple(),
+            )
+            original_post_author = getattr(preserved_source_message, "author", None)
+            original_post_author_name = self.get_source_display_name(original_post_author)
+            avatar_url = self.get_author_avatar_url(original_post_author)
+            if avatar_url:
+                embed.set_author(name=f"Original post by {original_post_author_name}", icon_url=avatar_url)
+            else:
+                embed.set_author(name=f"Original post by {original_post_author_name}")
+            embed.set_footer(text="Original post preserved before removing the untracked upload.")
+        else:
+            embed = discord.Embed(
+                title="Tracked log copy",
+                description="Tracked copy for download.",
+                color=discord.Color.blurple(),
+            )
+
+        embed.add_field(
+            name="Original uploader",
+            value=self.truncate_discord_message_content(original_uploader, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+            inline=True,
         )
-
-        if not preserved_source_content:
-            return provenance_note
-
-        separator = "\n\n"
-        max_preserved_length = DISCORD_MESSAGE_CONTENT_LIMIT - len(separator) - len(provenance_note)
-        if max_preserved_length <= 0:
-            return provenance_note
-
-        preserved_source_content = self.truncate_discord_message_content(
-            preserved_source_content,
-            max_preserved_length,
+        embed.add_field(
+            name="Original filename",
+            value=self.truncate_discord_message_content(original_filename, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+            inline=True,
         )
-        return f"{preserved_source_content}{separator}{provenance_note}"
+        return embed
 
     def create_unique_temp_dir(self, message_id):
         """
@@ -3895,16 +3928,17 @@ class RedBotCogLogscan(commands.Cog):
         # mylogger.info(f"Summary Lines: {summary_lines}")
 
         # Call the create_user_info_embed method
-        preserved_source_content = None
+        preserved_source_message = None
         if delete_source_message and source_message is not None:
-            preserved_source_content = self.build_preserved_original_post_note(source_message)
+            if self.is_help_forum_starter_message(source_message):
+                preserved_source_message = source_message
 
         tracked_filename = await self.send_tracked_attachment_copy(
             ctx,
             linked_message_author,
             attachment,
             source_filename=source_filename,
-            preserved_source_content=preserved_source_content,
+            preserved_source_message=preserved_source_message,
         )
         user_info_embed = self.create_user_info_embed(
             linked_message_author,
@@ -4225,6 +4259,7 @@ class RedBotCogLogscan(commands.Cog):
                         linked_message.author,
                         linked_message.content,
                         attachment,
+                        linked_message.embeds,
                     )
                     extension = detect_archive_type(attachment.filename)
 
@@ -4405,6 +4440,7 @@ class RedBotCogLogscan(commands.Cog):
                     message.author,
                     message.content,
                     attachment,
+                    message.embeds,
                 )
                 extension = detect_archive_type(attachment.filename)
 
