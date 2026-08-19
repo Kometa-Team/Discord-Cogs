@@ -3051,12 +3051,14 @@ class RedBotCogLogscan(commands.Cog):
         attachment,
         source_filename=None,
         preserved_source_message=None,
+        tracked_filename=None,
     ):
-        tracked_filename = self.build_attachment_tracking_name(
-            attachment,
-            linked_message_author,
-            source_filename=source_filename,
-        )
+        if tracked_filename is None:
+            tracked_filename = self.build_attachment_tracking_name(
+                attachment,
+                linked_message_author,
+                source_filename=source_filename,
+            )
         tracked_file = await attachment.to_file(filename=tracked_filename)
         preserved_links = await self.send_preserved_source_attachments(
             ctx,
@@ -3277,6 +3279,28 @@ class RedBotCogLogscan(commands.Cog):
         # Return the TOC entries and the TOC text
         return toc_entries, toc_text
 
+    def add_toc_to_scan_details_embed(self, scan_details_embed, toc_entries):
+        if not scan_details_embed or not toc_entries:
+            return
+
+        toc_string = "\n".join(
+            f"`Page {str(entry['page']).zfill(2)}:` {entry['name']}" for entry in toc_entries
+        )
+        toc_block = f"Table of Contents:\n{toc_string}"
+        description = scan_details_embed.description or ""
+        separator = "\n\n" if description else ""
+        max_description_length = DISCORD_EMBED_DESCRIPTION_LIMIT - len(separator) - len(toc_block)
+
+        if max_description_length < 1:
+            scan_details_embed.description = self.truncate_discord_message_content(
+                toc_block,
+                DISCORD_EMBED_DESCRIPTION_LIMIT,
+            )
+            return
+
+        description = self.truncate_discord_message_content(description, max_description_length)
+        scan_details_embed.description = f"{description}{separator}{toc_block}" if description else toc_block
+
     def create_people_posters_embed(self, ctx, found_items, not_found_names, not_found_names_with_url):
         target_thread = self.bot.get_channel(target_thread_id)
         target_thread_ref = target_thread.mention if isinstance(target_thread, discord.Thread) else f"<#{target_thread_id}>"
@@ -3431,6 +3455,7 @@ class RedBotCogLogscan(commands.Cog):
     def resolve_attachment_provenance(self, message_author, message_content, attachment, message_embeds=None):
         source_author = message_author
         source_filename = attachment.filename
+        provenance_found = False
 
         if message_content:
             uploader_match = re.search(r"^Original uploader:\s*(.+)$", message_content, re.MULTILINE)
@@ -3440,11 +3465,13 @@ class RedBotCogLogscan(commands.Cog):
                 uploader_name = uploader_match.group(1).strip()
                 if uploader_name:
                     source_author = SimpleNamespace(display_name=uploader_name, name=uploader_name, id=0)
+                    provenance_found = True
 
             if filename_match:
                 original_filename = filename_match.group(1).strip()
                 if original_filename:
                     source_filename = original_filename
+                    provenance_found = True
 
         for embed in message_embeds or []:
             for field in getattr(embed, "fields", []):
@@ -3453,8 +3480,21 @@ class RedBotCogLogscan(commands.Cog):
 
                 if field_name == ORIGINAL_UPLOADER_FIELD.lower() and field_value:
                     source_author = SimpleNamespace(display_name=field_value, name=field_value, id=0)
+                    provenance_found = True
                 elif field_name in ("original filename", ORIGINAL_LOG_FILENAME_FIELD.lower()) and field_value:
                     source_filename = field_value
+                    provenance_found = True
+
+        if not provenance_found:
+            tracking_components = self.parse_tracking_components(attachment.filename)
+            if tracking_components:
+                _, extension = self.split_filename(os.path.basename(attachment.filename))
+                source_author = SimpleNamespace(
+                    display_name=tracking_components["author"],
+                    name=tracking_components["author"],
+                    id=0,
+                )
+                source_filename = f"{tracking_components['base']}{extension}"
 
         return source_author, source_filename
 
@@ -3672,6 +3712,45 @@ class RedBotCogLogscan(commands.Cog):
             None,
         )
         return getattr(tracked_attachment, "url", None)
+
+    def add_attachment_links_to_scan_details_embed(
+        self,
+        scan_details_embed,
+        tracked_filename,
+        tracked_url,
+        preserved_links,
+    ):
+        if preserved_links:
+            scan_details_embed.add_field(
+                name=PRESERVED_ATTACHMENTS_FIELD,
+                value=self.format_attachment_links(preserved_links),
+                inline=False,
+            )
+        if tracked_url:
+            scan_details_embed.add_field(
+                name=TRACKED_LOG_FIELD,
+                value=f"[{tracked_filename}]({tracked_url})",
+                inline=False,
+            )
+
+    async def edit_menu_scan_details_embed(self, menu, menu_start_result, scan_details_embed):
+        menu_message = menu_start_result
+        if not hasattr(menu_message, "edit"):
+            for attribute_name in ("message", "_message", "current_message"):
+                menu_message = getattr(menu, attribute_name, None)
+                if hasattr(menu_message, "edit"):
+                    break
+
+        if not hasattr(menu_message, "edit"):
+            mylogger.warning("Could not edit scan details page with uploaded attachment links.")
+            return
+
+        try:
+            await menu_message.edit(embed=scan_details_embed)
+        except discord.HTTPException as e:
+            mylogger.warning(
+                f"Failed to update scan details page {getattr(menu_message, 'id', 'unknown')}: {e}"
+            )
 
     async def delete_tracked_source_message(self, source_message):
         try:
@@ -4021,21 +4100,11 @@ class RedBotCogLogscan(commands.Cog):
             if self.is_help_forum_thread_message(source_message):
                 preserved_source_message = source_message
 
-        tracked_filename, tracked_url, preserved_links = await self.send_tracked_attachment_copy(
-            ctx,
-            linked_message_author,
+        tracked_filename = self.build_attachment_tracking_name(
             attachment,
+            linked_message_author,
             source_filename=source_filename,
-            preserved_source_message=preserved_source_message,
         )
-        source_message_deleted = False
-        if (
-            delete_source_message
-            and source_message is not None
-            and self.is_help_forum_thread_message(source_message)
-        ):
-            await self.delete_tracked_source_message(source_message)
-            source_message_deleted = True
 
         scan_details_embed = self.build_tracked_attachment_embed(
             attachment,
@@ -4044,8 +4113,6 @@ class RedBotCogLogscan(commands.Cog):
             preserved_source_message=preserved_source_message,
             invoker=invoker,
             tracked_filename=tracked_filename,
-            tracked_url=tracked_url,
-            preserved_links=preserved_links,
         )
 
         # Call the create_kometa_info_embed method
@@ -4186,6 +4253,7 @@ class RedBotCogLogscan(commands.Cog):
 
         # Add page metadata for the scan result menu
         toc_entries, _ = self.generate_toc_entries_and_string(page_entries)
+        self.add_toc_to_scan_details_embed(scan_details_embed, toc_entries)
 
         menu = MyMenu(
             pages,
@@ -4204,7 +4272,30 @@ class RedBotCogLogscan(commands.Cog):
         try:
             # Check the type of ctx and use the appropriate method to start the menu
             mylogger.info(f"STANDARD: Starting menu.")
-            await menu.start(ctx)  # Start the menu for regular messages
+            menu_start_result = await menu.start(ctx)  # Start the menu for regular messages
+
+            _, tracked_url, preserved_links = await self.send_tracked_attachment_copy(
+                ctx,
+                linked_message_author,
+                attachment,
+                source_filename=source_filename,
+                preserved_source_message=preserved_source_message,
+                tracked_filename=tracked_filename,
+            )
+            self.add_attachment_links_to_scan_details_embed(
+                scan_details_embed,
+                tracked_filename,
+                tracked_url,
+                preserved_links,
+            )
+            await self.edit_menu_scan_details_embed(menu, menu_start_result, scan_details_embed)
+
+            if (
+                delete_source_message
+                and source_message is not None
+                and self.is_help_forum_thread_message(source_message)
+            ):
+                await self.delete_tracked_source_message(source_message)
 
         except AttributeError as e:
             # Handle the AttributeError if needed
@@ -4254,17 +4345,6 @@ class RedBotCogLogscan(commands.Cog):
             except asyncio.TimeoutError:
                 # User didn't respond within 30 seconds, delete the prompt message
                 await prompt_message.delete()
-
-        # Call the send_completion_message function
-        # await self.send_completion_message(ctx, attachment)
-
-        if (
-            delete_source_message
-            and source_message is not None
-            and self.is_help_forum_thread_message(source_message)
-            and not source_message_deleted
-        ):
-            await self.delete_tracked_source_message(source_message)
 
     @commands.hybrid_command(name="logscan")
     @app_commands.describe(message_link="The discord message link you want to scan.")
