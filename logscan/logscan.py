@@ -3546,11 +3546,7 @@ class RedBotCogLogscan(commands.Cog):
 
     def is_help_forum_thread_message(self, message):
         channel = getattr(message, "channel", None)
-        if not isinstance(channel, discord.Thread):
-            return False
-
-        parent = getattr(channel, "parent", None)
-        return bool(parent and getattr(parent, "id", None) == ALLOWED_HELP)
+        return isinstance(channel, discord.Thread)
 
     def get_author_avatar_url(self, author):
         display_avatar = getattr(author, "display_avatar", None)
@@ -3598,6 +3594,7 @@ class RedBotCogLogscan(commands.Cog):
             avatar_url = self.get_author_avatar_url(original_message_author)
             if avatar_url:
                 embed.set_author(name=f"{author_label} {original_message_author_name}", icon_url=avatar_url)
+                embed.set_thumbnail(url=avatar_url)
             else:
                 embed.set_author(name=f"{author_label} {original_message_author_name}")
             embed.set_footer(text="Original message preserved before removing the untracked upload.")
@@ -3613,6 +3610,25 @@ class RedBotCogLogscan(commands.Cog):
             inline=True,
         )
         return embed
+
+    async def delete_tracked_source_message(self, source_message):
+        try:
+            await source_message.delete()
+            mylogger.info(
+                f"Deleted original source message {source_message.id} after posting tracked attachment copy."
+            )
+        except discord.NotFound:
+            mylogger.info(
+                f"Original source message {getattr(source_message, 'id', 'unknown')} was already deleted."
+            )
+        except discord.Forbidden:
+            mylogger.warning(
+                f"Missing permission to delete original source message {getattr(source_message, 'id', 'unknown')}."
+            )
+        except discord.HTTPException as e:
+            mylogger.warning(
+                f"Failed to delete original source message {getattr(source_message, 'id', 'unknown')}: {e}"
+            )
 
     def create_unique_temp_dir(self, message_id):
         """
@@ -3951,6 +3967,15 @@ class RedBotCogLogscan(commands.Cog):
             source_filename=source_filename,
             preserved_source_message=preserved_source_message,
         )
+        source_message_deleted = False
+        if (
+            delete_source_message
+            and source_message is not None
+            and self.is_help_forum_thread_message(source_message)
+        ):
+            await self.delete_tracked_source_message(source_message)
+            source_message_deleted = True
+
         user_info_embed = self.create_user_info_embed(
             linked_message_author,
             invoker,
@@ -4193,24 +4218,9 @@ class RedBotCogLogscan(commands.Cog):
             delete_source_message
             and source_message is not None
             and self.is_help_forum_thread_message(source_message)
+            and not source_message_deleted
         ):
-            try:
-                await source_message.delete()
-                mylogger.info(
-                    f"Deleted original source message {source_message.id} after posting tracked attachment copy."
-                )
-            except discord.NotFound:
-                mylogger.info(
-                    f"Original source message {getattr(source_message, 'id', 'unknown')} was already deleted."
-                )
-            except discord.Forbidden:
-                mylogger.warning(
-                    f"Missing permission to delete original source message {getattr(source_message, 'id', 'unknown')}."
-                )
-            except discord.HTTPException as e:
-                mylogger.warning(
-                    f"Failed to delete original source message {getattr(source_message, 'id', 'unknown')}: {e}"
-                )
+            await self.delete_tracked_source_message(source_message)
 
     @commands.hybrid_command(name="logscan")
     @app_commands.describe(message_link="The discord message link you want to scan.")
