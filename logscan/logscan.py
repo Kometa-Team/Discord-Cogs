@@ -3274,6 +3274,113 @@ class RedBotCogLogscan(commands.Cog):
 
         return embed
 
+    def normalize_people_poster_name(self, value):
+        name = str(value or "").strip()
+        if name.startswith("- "):
+            name = name[2:].strip()
+        for suffix in (" (Director)", " (Producer)", " (Writer)"):
+            if name.endswith(suffix):
+                name = name[:-len(suffix)].strip()
+        return name
+
+    def extract_people_header_for_fake_log(self, content, max_lines=200):
+        header_lines = []
+        for line in str(content or "").splitlines():
+            header_lines.append(line)
+            if "Locating config..." in line:
+                break
+            if len(header_lines) >= max_lines:
+                break
+        return "\n".join(header_lines).rstrip()
+
+    def normalize_people_log_line(self, line):
+        return str(line or "").strip().strip("|").strip().strip("= ").strip()
+
+    def find_people_log_section_bounds(self, cleaned_lines, index, max_span=300):
+        strong_start_patterns = (
+            r"^(.+?) Collection in .+$",
+            r"^Running .+ Collection$",
+        )
+        weak_start_patterns = (
+            r"^Updating Details of .+ Collection$",
+            r"^Validating .+ Attributes$",
+        )
+        end_patterns = (r"^Finished .+ Collection$",)
+
+        start = None
+        end = None
+        min_index = max(0, index - max_span)
+        for idx in range(index, min_index - 1, -1):
+            normalized = self.normalize_people_log_line(cleaned_lines[idx])
+            if normalized and any(re.match(pattern, normalized) for pattern in strong_start_patterns):
+                start = idx
+                break
+
+        if start is None:
+            for idx in range(index, min_index - 1, -1):
+                normalized = self.normalize_people_log_line(cleaned_lines[idx])
+                if normalized and any(re.match(pattern, normalized) for pattern in weak_start_patterns):
+                    start = idx
+                    break
+
+        max_index = len(cleaned_lines) - 1
+        max_end = min(max_index, index + max_span)
+        for idx in range(index, max_end + 1):
+            normalized = self.normalize_people_log_line(cleaned_lines[idx])
+            if normalized and any(re.match(pattern, normalized) for pattern in end_patterns):
+                end = idx
+                break
+
+        if start is None:
+            start = max(0, index - 8)
+        if end is None:
+            end = min(max_index, index + 8)
+        return start, end
+
+    def build_missing_people_fake_log(self, content, not_found_names, not_found_names_with_url):
+        missing_names = set()
+        for raw_name in list(not_found_names or []) + list(not_found_names_with_url or []):
+            name = self.normalize_people_poster_name(raw_name)
+            if name:
+                missing_names.add(name.lower())
+        if not missing_names:
+            return None
+
+        raw_lines = str(content or "").splitlines()
+        cleaned_lines = self.cleanup_content(content).splitlines()
+        blocks = []
+        seen_blocks = set()
+
+        for idx, cleaned_line in enumerate(cleaned_lines):
+            normalized_line = self.normalize_people_log_line(cleaned_line)
+            lowered_line = normalized_line.lower()
+            is_people_signal = (
+                "collection warning: no poster found" in lowered_line
+                or "tmdb_person updated poster to [url]" in lowered_line
+            )
+            mentions_missing_name = any(name in lowered_line for name in missing_names)
+            if not is_people_signal and not mentions_missing_name:
+                continue
+
+            start, end = self.find_people_log_section_bounds(cleaned_lines, idx)
+            block_lines = raw_lines[start:end + 1]
+            block_text = "\n".join(block_lines).strip()
+            block_lower = block_text.lower()
+            if not any(name in block_lower for name in missing_names):
+                continue
+            if block_text and block_text not in seen_blocks:
+                blocks.append(block_text)
+                seen_blocks.add(block_text)
+
+        if not blocks:
+            return None
+
+        header = self.extract_people_header_for_fake_log(content)
+        output_parts = []
+        if header:
+            output_parts.append(header)
+        output_parts.extend(blocks)
+        return "\n".join(output_parts).rstrip() + "\n"
     async def send_to_masters(self, ctx, target_masters_thread_id, sohjiro_id, msg_txt):
         target_channel = self.bot.get_channel(target_masters_thread_id)
         specific_user = ctx.author  # Use ctx.author as the specific user
@@ -3304,14 +3411,20 @@ class RedBotCogLogscan(commands.Cog):
                 await ctx.send(
                     f"❌ **Failure to send to: {target_channel_ref} contact `@Support` directly about this failure** ❌")
 
-    async def send_people_poster_request(self, ctx, target_thread_id, specific_user_id):
+    async def send_people_poster_request(self, ctx, target_thread_id, specific_user_id, fake_log_text=None):
         target_thread = self.bot.get_channel(target_thread_id)
         specific_user = ctx.author  # Use ctx.author as the specific user
         target_thread_ref = target_thread.mention if isinstance(target_thread, discord.Thread) else f"<#{target_thread_id}>"
 
         if isinstance(target_thread, discord.Thread) and specific_user:
             sender_mention = f"Sender: {ctx.author.mention}\nA request for a people poster was made."
-            sent_message = await target_thread.send(f"{sender_mention}\n\n")
+            fake_log_file = None
+            if fake_log_text:
+                fake_log_file = discord.File(io.BytesIO(fake_log_text.encode("utf-8")), filename="meta_people_missing.log")
+            if fake_log_file:
+                sent_message = await target_thread.send(f"{sender_mention}\n\n", file=fake_log_file)
+            else:
+                sent_message = await target_thread.send(f"{sender_mention}\n\n")
 
             user_mention = f"<@{specific_user_id}>"
 
@@ -4828,7 +4941,13 @@ class RedBotCogLogscan(commands.Cog):
                                                                     not_found_names_with_url)
         # After sending people posters as an embed
         if not_found_names or not_found_names_with_url:
-            await self.send_people_poster_request(ctx, target_thread_id, specific_user_id)
+            fake_people_log = self.build_missing_people_fake_log(content, not_found_names, not_found_names_with_url)
+            await self.send_people_poster_request(
+                ctx,
+                target_thread_id,
+                specific_user_id,
+                fake_log_text=fake_people_log,
+            )
 
         if self.checkfiles_flg == 1:
             await self.send_to_masters(ctx, target_masters_thread_id, sohjiro_id,
