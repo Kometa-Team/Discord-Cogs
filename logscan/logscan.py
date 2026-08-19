@@ -49,7 +49,7 @@ DISCORD_MESSAGE_CONTENT_LIMIT = 2000
 DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
 DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
 DISCORD_FILES_PER_MESSAGE_LIMIT = 10
-TRACKED_UPLOAD_TITLE = "Preserved log upload"
+SCAN_DETAILS_TITLE = "Scan Details"
 ORIGINAL_UPLOADER_FIELD = "Original uploader"
 ORIGINAL_LOG_FILENAME_FIELD = "Original log filename"
 SCAN_REQUESTED_BY_FIELD = "Scan requested by"
@@ -3051,7 +3051,6 @@ class RedBotCogLogscan(commands.Cog):
         attachment,
         source_filename=None,
         preserved_source_message=None,
-        invoker=None,
     ):
         tracked_filename = self.build_attachment_tracking_name(
             attachment,
@@ -3059,28 +3058,14 @@ class RedBotCogLogscan(commands.Cog):
             source_filename=source_filename,
         )
         tracked_file = await attachment.to_file(filename=tracked_filename)
-        tracking_embed = self.build_tracked_attachment_embed(
-            attachment,
-            linked_message_author,
-            source_filename=source_filename,
-            preserved_source_message=preserved_source_message,
-            invoker=invoker,
-        )
-        embed_message = await ctx.send(embed=tracking_embed)
         preserved_links = await self.send_preserved_source_attachments(
             ctx,
             preserved_source_message,
             attachment,
         )
         tracked_message = await ctx.send(file=tracked_file)
-        await self.add_attachment_link_fields(
-            embed_message,
-            tracking_embed,
-            tracked_filename,
-            tracked_message,
-            preserved_links=preserved_links,
-        )
-        return tracked_filename
+        tracked_url = self.get_uploaded_attachment_url(tracked_message, tracked_filename)
+        return tracked_filename, tracked_url, preserved_links
 
     def create_plex_config_pages(self, plex_config_sections, incomplete_message, message):
         # Initialize server_icon_url to None
@@ -3554,6 +3539,9 @@ class RedBotCogLogscan(commands.Cog):
         source_filename=None,
         preserved_source_message=None,
         invoker=None,
+        tracked_filename=None,
+        tracked_url=None,
+        preserved_links=None,
     ):
         original_uploader = self.get_source_display_name(source_author) or "Unknown"
         original_filename = source_filename or attachment.filename
@@ -3564,7 +3552,7 @@ class RedBotCogLogscan(commands.Cog):
 
         if preserved_content:
             embed = discord.Embed(
-                title=TRACKED_UPLOAD_TITLE,
+                title=SCAN_DETAILS_TITLE,
                 description=self.truncate_discord_message_content(
                     preserved_content,
                     DISCORD_EMBED_DESCRIPTION_LIMIT,
@@ -3573,7 +3561,7 @@ class RedBotCogLogscan(commands.Cog):
             )
         else:
             embed = discord.Embed(
-                title=TRACKED_UPLOAD_TITLE,
+                title=SCAN_DETAILS_TITLE,
                 description="Original message had no text." if preserved_source_message else "Tracked log is ready.",
                 color=discord.Color.blurple(),
             )
@@ -3610,6 +3598,18 @@ class RedBotCogLogscan(commands.Cog):
                     DISCORD_EMBED_FIELD_VALUE_LIMIT,
                 ),
                 inline=True,
+            )
+        if preserved_links:
+            embed.add_field(
+                name=PRESERVED_ATTACHMENTS_FIELD,
+                value=self.format_attachment_links(preserved_links),
+                inline=False,
+            )
+        if tracked_url:
+            embed.add_field(
+                name=TRACKED_LOG_FIELD,
+                value=f"[{tracked_filename}]({tracked_url})",
+                inline=False,
             )
         return embed
 
@@ -3662,15 +3662,7 @@ class RedBotCogLogscan(commands.Cog):
         value = "\n".join(lines)
         return self.truncate_discord_message_content(value, DISCORD_EMBED_FIELD_VALUE_LIMIT)
 
-    async def add_attachment_link_fields(
-        self,
-        embed_message,
-        tracking_embed,
-        tracked_filename,
-        tracked_message,
-        *,
-        preserved_links=None,
-    ):
+    def get_uploaded_attachment_url(self, tracked_message, tracked_filename):
         tracked_attachment = next(
             (
                 attachment
@@ -3679,28 +3671,7 @@ class RedBotCogLogscan(commands.Cog):
             ),
             None,
         )
-        attachment_url = getattr(tracked_attachment, "url", None)
-
-        if preserved_links:
-            tracking_embed.add_field(
-                name=PRESERVED_ATTACHMENTS_FIELD,
-                value=self.format_attachment_links(preserved_links),
-                inline=False,
-            )
-
-        if attachment_url:
-            tracking_embed.add_field(
-                name=TRACKED_LOG_FIELD,
-                value=f"[{tracked_filename}]({attachment_url})",
-                inline=False,
-            )
-
-        try:
-            await embed_message.edit(embed=tracking_embed)
-        except discord.HTTPException as e:
-            mylogger.warning(
-                f"Failed to add attachment links to message {getattr(embed_message, 'id', 'unknown')}: {e}"
-            )
+        return getattr(tracked_attachment, "url", None)
 
     async def delete_tracked_source_message(self, source_message):
         try:
@@ -4050,13 +4021,12 @@ class RedBotCogLogscan(commands.Cog):
             if self.is_help_forum_thread_message(source_message):
                 preserved_source_message = source_message
 
-        tracked_filename = await self.send_tracked_attachment_copy(
+        tracked_filename, tracked_url, preserved_links = await self.send_tracked_attachment_copy(
             ctx,
             linked_message_author,
             attachment,
             source_filename=source_filename,
             preserved_source_message=preserved_source_message,
-            invoker=invoker,
         )
         source_message_deleted = False
         if (
@@ -4066,6 +4036,17 @@ class RedBotCogLogscan(commands.Cog):
         ):
             await self.delete_tracked_source_message(source_message)
             source_message_deleted = True
+
+        scan_details_embed = self.build_tracked_attachment_embed(
+            attachment,
+            linked_message_author,
+            source_filename=source_filename,
+            preserved_source_message=preserved_source_message,
+            invoker=invoker,
+            tracked_filename=tracked_filename,
+            tracked_url=tracked_url,
+            preserved_links=preserved_links,
+        )
 
         # Call the create_kometa_info_embed method
         kometa_info_embed, incomplete_message = self.create_kometa_info_embed(header_lines, finished_lines, ctx,
@@ -4162,6 +4143,9 @@ class RedBotCogLogscan(commands.Cog):
 
         # Initialize an empty list for page metadata
         page_entries = []
+
+        if scan_details_embed:
+            page_entries.append(self.build_page_entry(scan_details_embed))
 
         if scan_summary_embed:
             page_entries.append(self.build_page_entry(scan_summary_embed))
