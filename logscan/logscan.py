@@ -4203,6 +4203,76 @@ class RedBotCogLogscan(commands.Cog):
             mylogger.warning(f"Failed to send progress ticker: {e}")
             return None if final else previous_message
 
+    def build_progress_summary_embed(
+        self,
+        label,
+        total_count,
+        *,
+        completed_count=0,
+        failed_count=0,
+        skipped_count=0,
+        progress_message=None,
+        failed_files=None,
+    ):
+        color = discord.Color.green() if failed_count == 0 else discord.Color.orange()
+        embed = discord.Embed(
+            title=f"{label} Complete",
+            color=color,
+        )
+        embed.add_field(name="Completed", value=f"{completed_count}/{total_count}", inline=True)
+        embed.add_field(name="Failed", value=str(failed_count), inline=True)
+        embed.add_field(name="Skipped", value=str(skipped_count), inline=True)
+
+        progress_url = getattr(progress_message, "jump_url", None)
+        if progress_url:
+            embed.add_field(name="Detailed Progress", value=f"[Open progress embed]({progress_url})", inline=False)
+
+        if failed_files:
+            failed_text = "\n".join(f"`{name}`: {reason}" for name, reason in failed_files[:5])
+            if len(failed_files) > 5:
+                failed_text += f"\n...and {len(failed_files) - 5} more."
+            embed.add_field(
+                name="Failed files",
+                value=self.truncate_discord_message_content(failed_text, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+                inline=False,
+            )
+
+        return embed
+
+    async def send_progress_summary(
+        self,
+        ctx,
+        previous_ticker_message,
+        label,
+        total_count,
+        *,
+        completed_count=0,
+        failed_count=0,
+        skipped_count=0,
+        progress_message=None,
+        failed_files=None,
+    ):
+        if previous_ticker_message:
+            try:
+                await previous_ticker_message.delete()
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException) as e:
+                mylogger.warning(f"Failed to delete previous progress ticker before summary: {e}")
+
+        embed = self.build_progress_summary_embed(
+            label,
+            total_count,
+            completed_count=completed_count,
+            failed_count=failed_count,
+            skipped_count=skipped_count,
+            progress_message=progress_message,
+            failed_files=failed_files,
+        )
+        try:
+            return await ctx.send(embed=embed)
+        except discord.HTTPException as e:
+            mylogger.warning(f"Failed to send progress summary embed: {e}")
+            return None
+
     async def process_extracted_archive_files(
         self,
         ctx,
@@ -4310,7 +4380,7 @@ class RedBotCogLogscan(commands.Cog):
                 failed_files.append((file_name, f"{type(e).__name__}: {e}"))
                 continue
 
-        await self.refresh_progress_ticker(
+        await self.send_progress_summary(
             ctx,
             ticker_message,
             "Archive logscan",
@@ -4318,8 +4388,8 @@ class RedBotCogLogscan(commands.Cog):
             completed_count=completed_count,
             failed_count=len(failed_files),
             skipped_count=len(skipped_files),
-            status="Complete",
-            final=True,
+            progress_message=status_message,
+            failed_files=failed_files,
         )
         await self.update_archive_status_message(
             status_message,
@@ -4551,7 +4621,7 @@ class RedBotCogLogscan(commands.Cog):
                 failed_files.append((current_filename, f"{type(e).__name__}: {e}"))
                 continue
 
-        await self.refresh_progress_ticker(
+        await self.send_progress_summary(
             ctx,
             ticker_message,
             "Attachment logscan",
@@ -4559,8 +4629,8 @@ class RedBotCogLogscan(commands.Cog):
             completed_count=completed_count,
             failed_count=len(failed_files),
             skipped_count=len(skipped_files),
-            status="Complete",
-            final=True,
+            progress_message=status_message,
+            failed_files=failed_files,
         )
         await self.update_archive_status_message(
             status_message,
