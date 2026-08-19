@@ -4141,6 +4141,68 @@ class RedBotCogLogscan(commands.Cog):
         except discord.HTTPException as e:
             mylogger.warning(f"Failed to update archive progress message: {e}")
 
+    def build_progress_ticker_text(
+        self,
+        label,
+        total_count,
+        *,
+        completed_count=0,
+        failed_count=0,
+        skipped_count=0,
+        current_index=None,
+        current_filename=None,
+        status="Scanning",
+    ):
+        parts = [
+            f"**{label}:** {status}",
+            f"Completed: `{completed_count}/{total_count}`",
+            f"Failed: `{failed_count}`",
+        ]
+        if skipped_count:
+            parts.append(f"Skipped: `{skipped_count}`")
+        if current_filename:
+            parts.append(f"Current: `{current_index}/{total_count}` {current_filename}")
+
+        return self.truncate_discord_message_content("\n".join(parts), DISCORD_MESSAGE_CONTENT_LIMIT)
+
+    async def refresh_progress_ticker(
+        self,
+        ctx,
+        previous_message,
+        label,
+        total_count,
+        *,
+        completed_count=0,
+        failed_count=0,
+        skipped_count=0,
+        current_index=None,
+        current_filename=None,
+        status="Scanning",
+        final=False,
+    ):
+        if previous_message:
+            try:
+                await previous_message.delete()
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException) as e:
+                mylogger.warning(f"Failed to delete previous progress ticker: {e}")
+
+        content = self.build_progress_ticker_text(
+            label,
+            total_count,
+            completed_count=completed_count,
+            failed_count=failed_count,
+            skipped_count=skipped_count,
+            current_index=current_index,
+            current_filename=current_filename,
+            status=status,
+        )
+
+        try:
+            return await ctx.send(content)
+        except discord.HTTPException as e:
+            mylogger.warning(f"Failed to send progress ticker: {e}")
+            return None if final else previous_message
+
     async def process_extracted_archive_files(
         self,
         ctx,
@@ -4196,6 +4258,7 @@ class RedBotCogLogscan(commands.Cog):
         archive_config_extract_decision = None
         completed_count = 0
         failed_files = []
+        ticker_message = None
         for index, (file_name, content, content_bytes) in enumerate(valid_logs, start=1):
             await self.update_archive_status_message(
                 status_message,
@@ -4211,6 +4274,18 @@ class RedBotCogLogscan(commands.Cog):
                     failed_count=len(failed_files),
                     failed_files=failed_files,
                 ),
+            )
+            ticker_message = await self.refresh_progress_ticker(
+                ctx,
+                ticker_message,
+                "Archive logscan",
+                len(valid_logs),
+                completed_count=completed_count,
+                failed_count=len(failed_files),
+                skipped_count=len(skipped_files),
+                current_index=index,
+                current_filename=file_name,
+                status="Scanning",
             )
             try:
                 config_extract_decision = await self.process_attachment(
@@ -4235,6 +4310,17 @@ class RedBotCogLogscan(commands.Cog):
                 failed_files.append((file_name, f"{type(e).__name__}: {e}"))
                 continue
 
+        await self.refresh_progress_ticker(
+            ctx,
+            ticker_message,
+            "Archive logscan",
+            len(valid_logs),
+            completed_count=completed_count,
+            failed_count=len(failed_files),
+            skipped_count=len(skipped_files),
+            status="Complete",
+            final=True,
+        )
         await self.update_archive_status_message(
             status_message,
             self.build_archive_status_embed(
@@ -4411,6 +4497,7 @@ class RedBotCogLogscan(commands.Cog):
         batch_config_extract_decision = None
         completed_count = 0
         failed_files = []
+        ticker_message = None
         for index, log_info in enumerate(valid_logs, start=1):
             current_filename = log_info["source_filename"]
             await self.update_archive_status_message(
@@ -4427,6 +4514,18 @@ class RedBotCogLogscan(commands.Cog):
                     failed_count=len(failed_files),
                     failed_files=failed_files,
                 ),
+            )
+            ticker_message = await self.refresh_progress_ticker(
+                ctx,
+                ticker_message,
+                "Attachment logscan",
+                len(valid_logs),
+                completed_count=completed_count,
+                failed_count=len(failed_files),
+                skipped_count=len(skipped_files),
+                current_index=index,
+                current_filename=current_filename,
+                status="Scanning",
             )
 
             try:
@@ -4452,6 +4551,17 @@ class RedBotCogLogscan(commands.Cog):
                 failed_files.append((current_filename, f"{type(e).__name__}: {e}"))
                 continue
 
+        await self.refresh_progress_ticker(
+            ctx,
+            ticker_message,
+            "Attachment logscan",
+            len(valid_logs),
+            completed_count=completed_count,
+            failed_count=len(failed_files),
+            skipped_count=len(skipped_files),
+            status="Complete",
+            final=True,
+        )
         await self.update_archive_status_message(
             status_message,
             self.build_attachment_batch_status_embed(
