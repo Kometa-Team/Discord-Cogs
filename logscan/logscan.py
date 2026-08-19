@@ -259,6 +259,8 @@ class RedBotCogLogscan(commands.Cog):
         self.version_master = None
         self.version_develop = None
         self.version_nightly = None
+        self.kometa_version_sources = {}
+        self.kometa_versions_checked_at = None
         self.run_time = None
         self.plex_timeout = None
         self.checkfiles_flg = None
@@ -267,14 +269,10 @@ class RedBotCogLogscan(commands.Cog):
         self.current_schema_branch = "nightly"
         self.schema_url = self.schema_url_template.format(branch=self.current_schema_branch)
         self.schema_cache = {}
-        self.schema_cache_time = {}  # Track when each schema was cached (timestamp)
-        self.schema_etags = {}  # Track ETags for each branch to detect updates
-        self.schema_cache_ttl = 86400  # 24 hours in seconds
+        self.schema_fetch_source = None
+        self.schema_checked_at = None
         self.version_cache = {}
         self.people_posters_names_cache = None
-
-        # Load persisted ETags on startup
-        self.schema_etags = self.load_etags_from_disk()
 
         initialize_variables()  # Call the method to initialize variables
 
@@ -282,30 +280,39 @@ class RedBotCogLogscan(commands.Cog):
         """Reset the server_versions list to an empty list."""
         self.server_versions = []
 
-    def refresh_kometa_versions(self):
-        if self.version_master and self.version_develop and self.version_nightly:
-            return
+    def reset_attachment_state(self):
+        """Reset values parsed from an individual uploaded log."""
+        self.current_kometa_version = None
+        self.kometa_newest_version = None
+        self.current_plexapi_version = None
+        self.run_time = None
+        self.plex_timeout = None
+        self.checkfiles_flg = None
+        self.current_schema_branch = "nightly"
+        self.schema_url = self.schema_url_template.format(branch=self.current_schema_branch)
+        self.schema_fetch_source = None
+        self.schema_checked_at = None
 
-        versions = self.load_versions_from_disk()
-        if versions:
-            self.version_master = versions.get("master", self.version_master)
-            self.version_develop = versions.get("develop", self.version_develop)
-            self.version_nightly = versions.get("nightly", self.version_nightly)
-            if self.version_master and self.version_develop and self.version_nightly:
-                mylogger.info("Using disk-cached Kometa branch versions")
-                return
+    def refresh_kometa_versions(self, force=False):
+        if not force and self.version_master and self.version_develop and self.version_nightly:
+            return
 
         version_sources = {}
         for branch in ("master", "develop", "nightly"):
-            if getattr(self, f"version_{branch}", None):
+            if not force and getattr(self, f"version_{branch}", None):
                 continue
             version_text, version_source = self.fetch_branch_version(branch)
             if version_text:
                 setattr(self, f"version_{branch}", version_text)
-                version_sources[branch] = version_text
+                version_sources[branch] = version_source
                 mylogger.info(f"Kometa {branch} version source: {version_source}")
+            elif force:
+                setattr(self, f"version_{branch}", None)
+                version_sources[branch] = version_source
 
         if version_sources:
+            self.kometa_version_sources.update(version_sources)
+            self.kometa_versions_checked_at = datetime.now()
             merged_versions = {
                 "master": self.version_master,
                 "develop": self.version_develop,
@@ -316,6 +323,27 @@ class RedBotCogLogscan(commands.Cog):
     @staticmethod
     def _normalize_version_text(value):
         return (value or "").strip().lower()
+
+    @staticmethod
+    def _clean_log_version_value(value):
+        return (value or "").strip().strip("|").strip()
+
+    def format_kometa_version_check_note(self):
+        checked_at = self.kometa_versions_checked_at or datetime.now()
+        note = f"as of logscan: {checked_at.strftime('%Y-%m-%d %H:%M:%S')}"
+        fallback_branches = [
+            branch
+            for branch in ("master", "develop", "nightly")
+            if self.kometa_version_sources.get(branch) not in (None, "live")
+        ]
+        if fallback_branches:
+            note += f"\nLive lookup unavailable for {', '.join(fallback_branches)}; showing cached values where available."
+        return note
+
+    def format_schema_validation_source_note(self):
+        if self.schema_fetch_source == "live" and self.schema_checked_at:
+            return f"Live schema fetched at {self.schema_checked_at.strftime('%Y-%m-%d %H:%M:%S')}."
+        return "Strict freshness mode: cached schemas are not used for validation."
 
     def determine_schema_branch(self):
         current_version = self._normalize_version_text(self.current_kometa_version)
@@ -398,69 +426,17 @@ class RedBotCogLogscan(commands.Cog):
 
         return validator_name in {"pattern", "anyof", "oneof", "format"}
 
-    def _is_cache_fresh(self, branch):
-        """Check if the in-memory schema cache is still fresh (within TTL)."""
-        if branch not in self.schema_cache_time:
-            return False
-
-        import time
-        age = time.time() - self.schema_cache_time[branch]
-        return age < self.schema_cache_ttl
-
     def fetch_schema_json(self):
         """
-        Fetch the schema JSON with smart caching and ETag support.
+        Fetch the schema JSON live for the strictest freshness.
 
-        Strategy:
-        1. Return in-memory cache if still fresh (TTL check)
-        2. Check online for updates using ETag (HEAD request)
-        3. Only download full schema if ETag changed or no cache exists
-        4. Fall back to disk cache if online check fails
+        Cached schemas are written after a successful live fetch for inspection or
+        future non-strict workflows, but they are not used for validation here.
         """
         schema_url = self.schema_url
         branch = self.current_schema_branch
 
-        # 1. Check if in-memory cache is still fresh
-        if branch in self.schema_cache and self._is_cache_fresh(branch):
-            mylogger.info(f"Using fresh in-memory cached schema for branch: {branch}")
-            return self.schema_cache[branch], None
-
-        # 2. Try to check online for updates using ETag
-        mylogger.info(f"Checking for schema updates from URL: {schema_url}")
-        try:
-            # Use HEAD request to check if schema changed (efficient)
-            head_response = requests.head(
-                schema_url,
-                timeout=(5, 20),
-                headers={"User-Agent": "Botmoose20-Logscan/1.0"},
-                allow_redirects=True,
-            )
-
-            if head_response.status_code == 200:
-                new_etag = head_response.headers.get("ETag")
-                old_etag = self.schema_etags.get(branch)
-
-                # If ETags match and we have a cached version, reuse it
-                if new_etag and new_etag == old_etag:
-                    if branch in self.schema_cache:
-                        mylogger.info(f"Schema is up-to-date (ETag unchanged) for branch: {branch}")
-                        import time
-                        self.schema_cache_time[branch] = time.time()
-                        return self.schema_cache[branch], None
-
-                    cached_schema = self.load_schema_from_disk(branch)
-                    if cached_schema is not None:
-                        mylogger.info(f"Using disk-cached schema (ETag verified) for branch: {branch}")
-                        import time
-                        self.schema_cache[branch] = cached_schema
-                        self.schema_cache_time[branch] = time.time()
-                        return cached_schema, None
-        except requests.RequestException as e:
-            mylogger.warning(f"ETag check failed for {schema_url}: {type(e).__name__}: {e}")
-            # Fall through to try loading from cache below
-
-        # 3. Try to download full schema if ETag check didn't help
-        mylogger.info(f"Fetching schema from URL: {schema_url}")
+        mylogger.info(f"Fetching live schema from URL: {schema_url}")
         try:
             schema_response = requests.get(
                 schema_url,
@@ -469,18 +445,10 @@ class RedBotCogLogscan(commands.Cog):
             )
         except requests.RequestException as e:
             mylogger.error(f"Schema fetch request failed for {schema_url}: {type(e).__name__}: {e}")
-            # Fall back to disk cache
-            cached_schema = self.load_schema_from_disk(branch)
-            if cached_schema is not None:
-                mylogger.info(f"Using disk-cached schema (online fetch failed) for branch: {branch}")
-                import time
-                self.schema_cache[branch] = cached_schema
-                self.schema_cache_time[branch] = time.time()
-                return cached_schema, None
-
             return None, (
                 "ℹ️ **SCHEMA VALIDATION UNAVAILABLE**\n"
-                "Logscan could not download the Kometa schema and no cached local copy was available.\n"
+                "Logscan could not download the live Kometa schema.\n"
+                "Strict freshness mode is enabled; cached schemas are not used for validation.\n"
                 f"Branch: `{branch}`\n"
                 f"URL: `{schema_url}`\n"
                 f"Request error: `{type(e).__name__}: {e}`"
@@ -491,18 +459,10 @@ class RedBotCogLogscan(commands.Cog):
         )
 
         if schema_response.status_code != 200:
-            # Fall back to disk cache
-            cached_schema = self.load_schema_from_disk(branch)
-            if cached_schema is not None:
-                mylogger.info(f"Using disk-cached schema (HTTP {schema_response.status_code}) for branch: {branch}")
-                import time
-                self.schema_cache[branch] = cached_schema
-                self.schema_cache_time[branch] = time.time()
-                return cached_schema, None
-
             return None, (
                 "ℹ️ **SCHEMA VALIDATION UNAVAILABLE**\n"
-                "Logscan could not download the Kometa schema and no cached local copy was available.\n"
+                "Logscan could not download the live Kometa schema.\n"
+                "Strict freshness mode is enabled; cached schemas are not used for validation.\n"
                 f"Branch: `{branch}`\n"
                 f"URL: `{schema_url}`\n"
                 f"HTTP status: `{schema_response.status_code} {schema_response.reason}`"
@@ -510,34 +470,19 @@ class RedBotCogLogscan(commands.Cog):
 
         try:
             schema_json = schema_response.json()
-            # Update cache and ETag
             self.schema_cache[branch] = schema_json
-            import time
-            self.schema_cache_time[branch] = time.time()
-
-            # Update ETag for future checks
-            new_etag = schema_response.headers.get("ETag")
-            if new_etag:
-                self.schema_etags[branch] = new_etag
-                self.save_etags_to_disk()
+            self.schema_fetch_source = "live"
+            self.schema_checked_at = datetime.now()
 
             self.save_schema_to_disk(branch, schema_json)
-            mylogger.info(f"Fetched and cached fresh schema for branch: {branch}")
+            mylogger.info(f"Fetched live schema for branch: {branch}")
             return schema_json, None
         except ValueError as e:
             mylogger.error(f"Schema JSON parse failed for {schema_url}: {e}")
-            # Fall back to disk cache
-            cached_schema = self.load_schema_from_disk(branch)
-            if cached_schema is not None:
-                mylogger.info(f"Using disk-cached schema (parse error on new version) for branch: {branch}")
-                import time
-                self.schema_cache[branch] = cached_schema
-                self.schema_cache_time[branch] = time.time()
-                return cached_schema, None
-
             return None, (
                 "ℹ️ **SCHEMA VALIDATION UNAVAILABLE**\n"
-                "Logscan downloaded the schema response but could not parse it, and no cached local copy was available.\n"
+                "Logscan downloaded the live schema response but could not parse it.\n"
+                "Strict freshness mode is enabled; cached schemas are not used for validation.\n"
                 f"Branch: `{branch}`\n"
                 f"URL: `{schema_url}`\n"
                 f"Parse error: `{e}`"
@@ -552,20 +497,6 @@ class RedBotCogLogscan(commands.Cog):
         safe_branch = re.sub(r"[^a-z0-9_.-]", "_", (branch or "master").lower())
         return os.path.join(self.get_schema_cache_dir(), f"{safe_branch}-config-schema.json")
 
-    def load_schema_from_disk(self, branch):
-        cache_file = self.get_schema_cache_file(branch)
-        if not os.path.exists(cache_file):
-            return None
-
-        try:
-            with open(cache_file, "r", encoding="utf-8") as handle:
-                schema_json = json.load(handle)
-            self.schema_cache[branch] = schema_json
-            return schema_json
-        except Exception as e:
-            mylogger.warning(f"Failed to load cached schema from disk for {branch}: {e}")
-            return None
-
     def save_schema_to_disk(self, branch, schema_json):
         cache_file = self.get_schema_cache_file(branch)
         temp_file = f"{cache_file}.tmp"
@@ -575,38 +506,6 @@ class RedBotCogLogscan(commands.Cog):
             os.replace(temp_file, cache_file)
         except Exception as e:
             mylogger.warning(f"Failed to save cached schema to disk for {branch}: {e}")
-
-    def get_etag_cache_file(self):
-        """Get the path to the ETag cache file."""
-        return os.path.join(self.get_schema_cache_dir(), "schema-etags.json")
-
-    def load_etags_from_disk(self):
-        """Load saved ETags from disk."""
-        etag_file = self.get_etag_cache_file()
-        if not os.path.exists(etag_file):
-            return {}
-        try:
-            with open(etag_file, "r", encoding="utf-8") as handle:
-                return json.load(handle)
-        except Exception as e:
-            mylogger.warning(f"Failed to load cached ETags from disk: {e}")
-            return {}
-
-    def save_etags_to_disk(self):
-        """Save ETags to disk for persistence across restarts."""
-        etag_file = self.get_etag_cache_file()
-        temp_file = f"{etag_file}.tmp"
-        try:
-            with open(temp_file, "w", encoding="utf-8") as handle:
-                json.dump(self.schema_etags, handle)
-            os.replace(temp_file, etag_file)
-        except Exception as e:
-            mylogger.warning(f"Failed to save ETags to disk: {e}")
-            try:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-            except OSError:
-                pass
 
     def get_version_cache_file(self):
         return os.path.join(self.get_schema_cache_dir(), "kometa-versions.json")
@@ -648,8 +547,6 @@ class RedBotCogLogscan(commands.Cog):
     def fetch_branch_version(self, branch):
         cached_versions = self.load_versions_from_disk()
         cached_value = cached_versions.get(branch)
-        if cached_value:
-            return cached_value, "disk-cache"
 
         version_url = f"https://raw.githubusercontent.com/kometa-team/Kometa/{branch}/VERSION"
         try:
@@ -711,29 +608,37 @@ class RedBotCogLogscan(commands.Cog):
 
     def fetch_people_posters_readme(self):
         if self.people_posters_names_cache is not None:
-            return self.people_posters_names_cache, "memory-cache"
+            cached_names = self.people_posters_names_cache
+        else:
+            cached_names = None
 
         readme_url = "https://raw.githubusercontent.com/Kometa-Team/People-Images-bw/master/README.md"
-        readme_content = self.load_people_posters_readme_from_disk()
-        source = "disk-cache" if readme_content is not None else "unavailable"
+        readme_content = None
+        source = "unavailable"
+
+        try:
+            response = requests.get(
+                readme_url,
+                timeout=(5, 20),
+                headers={"User-Agent": "Botmoose20-Logscan/1.0"},
+            )
+            if response.status_code == 200:
+                readme_content = response.text
+                self.save_people_posters_readme_to_disk(readme_content)
+                source = "live"
+            else:
+                mylogger.warning(
+                    f"People Posters README fetch returned {response.status_code} {response.reason}"
+                )
+        except requests.RequestException as e:
+            mylogger.warning(f"People Posters README fetch request failed: {type(e).__name__}: {e}")
 
         if readme_content is None:
-            try:
-                response = requests.get(
-                    readme_url,
-                    timeout=(5, 20),
-                    headers={"User-Agent": "Botmoose20-Logscan/1.0"},
-                )
-                if response.status_code == 200:
-                    readme_content = response.text
-                    self.save_people_posters_readme_to_disk(readme_content)
-                    source = "live"
-                else:
-                    mylogger.warning(
-                        f"People Posters README fetch returned {response.status_code} {response.reason}"
-                    )
-            except requests.RequestException as e:
-                mylogger.warning(f"People Posters README fetch request failed: {type(e).__name__}: {e}")
+            if cached_names is not None:
+                return cached_names, "memory-cache"
+
+            readme_content = self.load_people_posters_readme_from_disk()
+            source = "disk-cache" if readme_content is not None else source
 
         if readme_content is None:
             return None, source
@@ -1967,12 +1872,12 @@ class RedBotCogLogscan(commands.Cog):
         if new_version_found_errors:
             url_line = "[https://kometa.wiki/en/latest/kometa/logs/#checking-kometa-version]"
             formatted_errors = self.format_contiguous_lines(new_version_found_errors)
-            note = f"**(as of {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})**"
+            note = self.format_kometa_version_check_note()
             new_version_found_errors_message = (
                 "🚀 **VERSION UPDATE AVAILABLE**\n"
-                f"**Current Version:** {self.current_kometa_version}\n"
-                f"**Newest Version (at the time of this log):** {self.kometa_newest_version}\n\n"
-                f"**Latest Kometa Versions** {note}\n"
+                f"**Version Reported In Log:** {self.current_kometa_version}\n"
+                f"**Update Target Reported In Log:** {self.kometa_newest_version}\n\n"
+                f"**Current Kometa Branch Versions**\n{note}\n"
                 f"Master branch: {self.version_master}\n"
                 f"Develop branch: {self.version_develop}\n"
                 f"Nightly branch: {self.version_nightly}\n\n"
@@ -2655,11 +2560,13 @@ class RedBotCogLogscan(commands.Cog):
 
             # Validate parsed_yaml against the schema
             validation_result, error_details = self.validate_against_schema(parsed_yaml, schema)
+            schema_source_note = self.format_schema_validation_source_note()
 
             if validation_result:
                 valid_yaml_message = (
                     "✅ **PASSED SCHEMA VALIDATION**\n"
-                    f"Validated against the Kometa `{self.current_schema_branch}` schema."
+                    f"Validated against the Kometa `{self.current_schema_branch}` schema.\n"
+                    f"{schema_source_note}"
                 )
                 return parsed_yaml, valid_yaml_message, file_content
             else:
@@ -2686,6 +2593,7 @@ class RedBotCogLogscan(commands.Cog):
                     valid_yaml_message = (
                         "✅ **PASSED SCHEMA VALIDATION**\n"
                         f"Validated against the Kometa `{self.current_schema_branch}` schema.\n"
+                        f"{schema_source_note}\n"
                         "⚠️ Some redacted values could not be fully confirmed against schema-specific rules. "
                         "This is expected for shared logs where service URLs, secrets, or tokens were intentionally redacted. "
                         "Keep them redacted.\n"
@@ -2698,7 +2606,8 @@ class RedBotCogLogscan(commands.Cog):
                         extra_note = f"\n**Redaction-related issues hidden from failure count:** {redaction_issue_count}"
                     invalid_yaml_message = (
                         "❌ **FAILED SCHEMA VALIDATION**\n"
-                        f"Validation against the Kometa `{self.current_schema_branch}` schema found {real_issue_count} real issue(s)."
+                        f"Validation against the Kometa `{self.current_schema_branch}` schema found {real_issue_count} real issue(s).\n"
+                        f"{schema_source_note}"
                         f"{extra_note}\n\n"
                         f"{issues_block}"
                     )
@@ -2731,16 +2640,15 @@ class RedBotCogLogscan(commands.Cog):
         header_lines = []
 
         for i, line in enumerate(lines):
-            if start_marker_current in line:
-                version_value = line.split(start_marker_current)[1].strip()  # Extract version value
+            if start_marker_current in line and start_marker_newest not in line:
+                version_value = self._clean_log_version_value(line.split(start_marker_current, 1)[1])
                 self.current_kometa_version = version_value  # Store the version as a class variable
                 while line and end_marker not in line:
                     header_lines.append(line.strip())  # Trim leading and trailing spaces
                     i += 1
                     line = lines[i] if i < len(lines) else ""
                     if start_marker_newest in line:
-                        newest_version_value = line.split(start_marker_newest)[
-                            1].strip()  # Extract newest version value
+                        newest_version_value = self._clean_log_version_value(line.split(start_marker_newest, 1)[1])
                         self.kometa_newest_version = newest_version_value  # Store the newest version as a class variable
                 header_lines.append(line.strip())  # Append the "Run Command" line
                 # mylogger.info(f"header_lines bef replacement: {header_lines}")
@@ -2881,8 +2789,8 @@ class RedBotCogLogscan(commands.Cog):
         self.refresh_kometa_versions()
 
         # Add version information to the embed
-        note = f"as of {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        kometa_info_embed.add_field(name="Available Kometa Versions", value=note)
+        note = self.format_kometa_version_check_note()
+        kometa_info_embed.add_field(name="Current Kometa Branch Versions", value=note)
 
         if self.version_master:
             self.add_fields_with_limit(kometa_info_embed, "Kometa Version (Master branch)", f"{self.version_master}")
@@ -4153,10 +4061,11 @@ class RedBotCogLogscan(commands.Cog):
         mylogger.info(f"process_attachment is starting")
         incomplete_message = ""
         special_message = None
+        self.reset_attachment_state()
         parsed_content = await self.parse_attachment_content(content_bytes)
         # mylogger.info(f"parsed_content:{parsed_content}")
         header_lines = self.extract_header_lines(parsed_content)
-        self.refresh_kometa_versions()
+        self.refresh_kometa_versions(force=True)
         finished_lines = self.extract_last_lines(parsed_content)
         summary_lines = self.extract_finished_runs(parsed_content)
         quickstart_marker = self.extract_quickstart_run_marker(parsed_content)
