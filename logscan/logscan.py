@@ -48,6 +48,7 @@ NOPARSE_COMMAND = "!noparse"
 DISCORD_MESSAGE_CONTENT_LIMIT = 2000
 DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
 DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
+DISCORD_EMBED_TOTAL_LIMIT = 6000
 SCAN_DETAILS_TITLE = "Scan Details"
 ORIGINAL_MESSAGE_TEXT_LABEL = "Original message text"
 ORIGINAL_UPLOADER_FIELD = "Original uploader"
@@ -57,6 +58,8 @@ ORIGINAL_UPLOADER_MENTION_FIELD = "Original uploader mention"
 ORIGINAL_MESSAGE_FIELD = "Original message"
 TRACKED_LOG_FIELD = "Tracked log"
 EXTRACTED_CONFIG_FIELD = "Extracted config.yml"
+CONFIG_PENDING_VALUE = "Detected. Waiting for extraction decision."
+CONFIG_SKIPPED_VALUE = "Detected. Extraction skipped."
 TOC_FIELD = "Table of Contents"
 ORIGINAL_MESSAGE_AUTHOR_LABEL = "Original message by"
 PRESERVED_UPLOAD_FOOTER = "Original message remains available for native Discord replies."
@@ -3731,26 +3734,48 @@ class RedBotCogLogscan(commands.Cog):
         config_url,
     ):
         if config_url:
-            self.add_scan_details_field_before_toc(
+            self.set_scan_details_field_before_toc(
                 scan_details_embed,
                 EXTRACTED_CONFIG_FIELD,
                 f"[{config_filename}]({config_url})",
                 inline=False,
             )
 
+    def add_config_status_to_scan_details_embed(self, scan_details_embed, status):
+        self.set_scan_details_field_before_toc(
+            scan_details_embed,
+            EXTRACTED_CONFIG_FIELD,
+            status,
+            inline=False,
+        )
+
     def add_scan_details_field_before_toc(self, scan_details_embed, name, value, inline=False):
+        self.set_scan_details_field_before_toc(scan_details_embed, name, value, inline=inline)
+
+    def set_scan_details_field_before_toc(self, scan_details_embed, name, value, inline=False):
+        field_value = self.truncate_discord_message_content(value, DISCORD_EMBED_FIELD_VALUE_LIMIT)
+        existing_field_index = self.get_embed_field_index(scan_details_embed, name)
+        if existing_field_index is not None and hasattr(scan_details_embed, "set_field_at"):
+            scan_details_embed.set_field_at(
+                existing_field_index,
+                name=name,
+                value=field_value,
+                inline=inline,
+            )
+            return
+
         toc_field_index = self.get_embed_field_index(scan_details_embed, TOC_FIELD)
         if toc_field_index is None or not hasattr(scan_details_embed, "insert_field_at"):
             scan_details_embed.add_field(
                 name=name,
-                value=self.truncate_discord_message_content(value, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+                value=field_value,
                 inline=inline,
             )
         else:
             scan_details_embed.insert_field_at(
                 toc_field_index,
                 name=name,
-                value=self.truncate_discord_message_content(value, DISCORD_EMBED_FIELD_VALUE_LIMIT),
+                value=field_value,
                 inline=inline,
             )
 
@@ -3759,6 +3784,36 @@ class RedBotCogLogscan(commands.Cog):
             if getattr(field, "name", None) == field_name:
                 return index
         return None
+
+    def get_embed_text_length(self, embed):
+        total = len(getattr(embed, "title", None) or "")
+        total += len(getattr(embed, "description", None) or "")
+
+        footer = getattr(embed, "footer", None)
+        total += len(getattr(footer, "text", None) or "")
+
+        author = getattr(embed, "author", None)
+        total += len(getattr(author, "name", None) or "")
+
+        for field in getattr(embed, "fields", []):
+            total += len(getattr(field, "name", None) or "")
+            total += len(getattr(field, "value", None) or "")
+
+        return total
+
+    def fit_scan_details_embed_for_discord(self, scan_details_embed):
+        current_length = self.get_embed_text_length(scan_details_embed)
+        overflow = current_length - DISCORD_EMBED_TOTAL_LIMIT
+        description = getattr(scan_details_embed, "description", None) or ""
+
+        if overflow <= 0 or not description:
+            return
+
+        new_description_limit = max(0, len(description) - overflow - 3)
+        scan_details_embed.description = self.truncate_discord_message_content(
+            description,
+            new_description_limit,
+        )
 
     async def edit_menu_scan_details_embed(self, menu, menu_start_result, scan_details_embed):
         menu_message = menu_start_result
@@ -3770,14 +3825,27 @@ class RedBotCogLogscan(commands.Cog):
 
         if not hasattr(menu_message, "edit"):
             mylogger.warning("Could not edit scan details page with uploaded attachment links.")
-            return
+            return False
 
         try:
+            self.fit_scan_details_embed_for_discord(scan_details_embed)
             await menu_message.edit(embed=scan_details_embed)
+            return True
         except discord.HTTPException as e:
             mylogger.warning(
                 f"Failed to update scan details page {getattr(menu_message, 'id', 'unknown')}: {e}"
             )
+            return False
+
+    async def send_scan_details_update_fallback(self, ctx, field_name, filename, url):
+        if not filename or not url:
+            return
+
+        fallback_message = f"{field_name}: [{filename}]({url})"
+        try:
+            await ctx.send(self.truncate_discord_message_content(fallback_message))
+        except discord.HTTPException as e:
+            mylogger.warning(f"Failed to send Scan Details fallback link: {e}")
 
     def create_unique_temp_dir(self, message_id):
         """
@@ -4263,6 +4331,9 @@ class RedBotCogLogscan(commands.Cog):
         # Add page metadata for the scan result menu
         toc_entries, _ = self.generate_toc_entries_and_string(page_entries)
         self.add_toc_to_scan_details_embed(scan_details_embed, toc_entries)
+        if config_content:
+            self.add_config_status_to_scan_details_embed(scan_details_embed, CONFIG_PENDING_VALUE)
+        self.fit_scan_details_embed_for_discord(scan_details_embed)
 
         menu = MyMenu(
             pages,
@@ -4343,10 +4414,23 @@ class RedBotCogLogscan(commands.Cog):
                         config_filename,
                         config_url,
                     )
-                    await self.edit_menu_scan_details_embed(menu, menu_start_result, scan_details_embed)
+                    edit_successful = await self.edit_menu_scan_details_embed(
+                        menu,
+                        menu_start_result,
+                        scan_details_embed,
+                    )
+                    if not edit_successful:
+                        await self.send_scan_details_update_fallback(
+                            ctx,
+                            EXTRACTED_CONFIG_FIELD,
+                            config_filename,
+                            config_url,
+                        )
                     await prompt_message.delete()
                 else:
                     # User doesn't want to extract the .yml file
+                    self.add_config_status_to_scan_details_embed(scan_details_embed, CONFIG_SKIPPED_VALUE)
+                    await self.edit_menu_scan_details_embed(menu, menu_start_result, scan_details_embed)
                     await prompt_message.delete()
 
             except asyncio.TimeoutError:
@@ -4362,7 +4446,18 @@ class RedBotCogLogscan(commands.Cog):
                     config_filename,
                     config_url,
                 )
-                await self.edit_menu_scan_details_embed(menu, menu_start_result, scan_details_embed)
+                edit_successful = await self.edit_menu_scan_details_embed(
+                    menu,
+                    menu_start_result,
+                    scan_details_embed,
+                )
+                if not edit_successful:
+                    await self.send_scan_details_update_fallback(
+                        ctx,
+                        EXTRACTED_CONFIG_FIELD,
+                        config_filename,
+                        config_url,
+                    )
                 await prompt_message.delete()
 
     @commands.hybrid_command(name="logscan")
