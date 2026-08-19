@@ -2837,21 +2837,21 @@ class RedBotCogLogscan(commands.Cog):
         return summary_info_embed
 
     def create_user_info_embed(self, user, invoker, filename):
-        # Create an embed for the "User Info" page
+        # Create an embed for the scan details page
         tracked_filename = None
         if isinstance(filename, tuple):
             filename, tracked_filename = filename
 
         description = (
-            f"**Author of Linked Message:** {user.display_name}\n"
-            f"**Person who Invoked the Command:** {invoker.display_name}\n"
-            f"**File Name:** {filename}"
+            f"**{ORIGINAL_UPLOADER_FIELD}:** {user.display_name}\n"
+            f"**Scan requested by:** {invoker.display_name}\n"
+            f"**{ORIGINAL_LOG_FILENAME_FIELD}:** {filename}"
         )
         if tracked_filename and tracked_filename != filename:
-            description += f"\n**Tracked File Name:** {tracked_filename}"
+            description += f"\n**{TRACKED_LOG_FIELD}:** {tracked_filename}"
 
         user_info_embed = discord.Embed(
-            title="**User Info**",
+            title="**Scan Details**",
             description=description,
             color=discord.Color.blurple(),
         )
@@ -4232,7 +4232,7 @@ class RedBotCogLogscan(commands.Cog):
 
         pages = [entry["page"] for entry in page_entries]
 
-        # Add TOC for the "User Info" page
+        # Add TOC for the scan details page
         toc_entries, toc_text = self.generate_toc_entries_and_string(page_entries)
 
         # Generate the TOC string
