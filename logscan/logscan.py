@@ -36,6 +36,7 @@ SUPPORTED_FILE_EXTENSIONS = ('.txt', '.log', '.yml', '.1', '.2', '.3', '.4', '.5
 SUPPORTED_COMPRESSED_FORMATS = ['.zip', '.tar', '.tar.gz', '.gz', '.rar', '.7z']
 MAX_ARCHIVE_RECURSION_DEPTH = 3
 MAX_ARCHIVE_ENTRY_BYTES = 500 * 1024 * 1024
+DISCORD_FILE_UPLOAD_LIMIT = 10 * 1024 * 1024
 RAR_BACKEND_MISSING_MESSAGE = "RAR backend not found (install UnRAR or 7-Zip, or add it to PATH)"
 ALLOWED_ROLES = ["Support", "Moderator"]
 # 929756550380286153 Moderator
@@ -2978,14 +2979,28 @@ class RedBotCogLogscan(commands.Cog):
                 source_filename=source_filename,
             )
 
+        uploaded_filename = tracked_filename
+        attachment_size = getattr(attachment, "size", 0) or 0
+        if content_bytes is None and attachment_size >= DISCORD_FILE_UPLOAD_LIMIT:
+            content_bytes = await attachment.read()
+
         if content_bytes is None:
             tracked_file = await attachment.to_file(filename=tracked_filename)
         else:
-            tracked_file = discord.File(io.BytesIO(content_bytes), filename=tracked_filename)
+            upload_bytes = content_bytes
+            if len(content_bytes) >= DISCORD_FILE_UPLOAD_LIMIT:
+                uploaded_filename = self.build_compressed_tracking_filename(tracked_filename)
+                upload_bytes = self.compress_tracked_attachment(tracked_filename, content_bytes)
+                if len(upload_bytes) >= DISCORD_FILE_UPLOAD_LIMIT:
+                    raise ValueError(
+                        f"compressed tracked log still exceeds Discord's 10 MB upload limit "
+                        f"({len(upload_bytes)} bytes)"
+                    )
+            tracked_file = discord.File(io.BytesIO(upload_bytes), filename=uploaded_filename)
 
         tracked_message = await ctx.send(file=tracked_file)
-        tracked_url = self.get_uploaded_attachment_url(tracked_message, tracked_filename)
-        return tracked_filename, tracked_url
+        tracked_url = self.get_uploaded_attachment_url(tracked_message, uploaded_filename)
+        return uploaded_filename, tracked_url
 
     def create_plex_config_pages(self, plex_config_sections, incomplete_message, message):
         # Initialize server_icon_url to None
@@ -3511,13 +3526,37 @@ class RedBotCogLogscan(commands.Cog):
 
         if isinstance(target_channel, discord.abc.GuildChannel) and specific_user:
             mylogger.info(f"target_channel if is true: {target_channel}")
-            sender_mention = f"Sender: {ctx.author.mention}\nKometa-Masters, bot is notifying you.."
-            sent_message = await target_channel.send(f"{sender_mention}\n\n")
+            try:
+                sender_mention = f"Sender: {ctx.author.mention}\nKometa-Masters, bot is notifying you.."
+                await target_channel.send(f"{sender_mention}\n\n")
 
-            user_mention = f"<@{sohjiro_id}>"
+                user_mention = f"<@{sohjiro_id}>"
 
-            await target_channel.send(
-                f"{user_mention} {msg_txt}<{ctx.author.name}>. Log file found here: {ctx.message.jump_url}")
+                await target_channel.send(
+                    f"{user_mention} {msg_txt}<{ctx.author.name}>. Log file found here: {ctx.message.jump_url}")
+                return True
+            except discord.Forbidden as e:
+                mylogger.warning(
+                    f"Missing access while sending masters notification to {target_channel_ref}: {e}"
+                )
+                try:
+                    await ctx.send(
+                        f"❌ **Failure to send to: {target_channel_ref} contact `@Support` directly about this failure** ❌"
+                    )
+                except discord.HTTPException as fallback_error:
+                    mylogger.warning(f"Failed to send masters notification fallback: {fallback_error}")
+                return False
+            except discord.HTTPException as e:
+                mylogger.warning(
+                    f"HTTP error while sending masters notification to {target_channel_ref}: {e}"
+                )
+                try:
+                    await ctx.send(
+                        f"❌ **Failure to send to: {target_channel_ref} contact `@Support` directly about this failure** ❌"
+                    )
+                except discord.HTTPException as fallback_error:
+                    mylogger.warning(f"Failed to send masters notification fallback: {fallback_error}")
+                return False
         else:
             mylogger.info(f"target_channel if is FALSE: {target_channel}")
             response = []
@@ -3532,6 +3571,7 @@ class RedBotCogLogscan(commands.Cog):
                 await ctx.send("\n".join(response))
                 await ctx.send(
                     f"❌ **Failure to send to: {target_channel_ref} contact `@Support` directly about this failure** ❌")
+            return False
 
     async def send_people_poster_request(self, ctx, target_thread_id, specific_user_id, fake_log_text=None):
         target_thread = self.bot.get_channel(target_thread_id)
@@ -3692,6 +3732,19 @@ class RedBotCogLogscan(commands.Cog):
             f"{self.get_source_identity_key(source_author)}:{unique_seed}",
         ).hex[:8]
         return f"{base_part}_{author_part}_{unique_part}{extension}"
+
+    def build_compressed_tracking_filename(self, filename):
+        base_name, _ = self.split_filename(os.path.basename(filename))
+        safe_base = self.sanitize_filename_part(base_name or "tracked-log", "tracked-log")
+        return f"{safe_base}.zip"
+
+    @staticmethod
+    def compress_tracked_attachment(filename, content_bytes):
+        archive_buffer = io.BytesIO()
+        archive_name = os.path.basename(filename) or "tracked.log"
+        with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zip_ref:
+            zip_ref.writestr(archive_name, content_bytes)
+        return archive_buffer.getvalue()
 
     def build_attachment_tracking_name(self, attachment, source_author, source_filename=None):
         filename = source_filename or attachment.filename
@@ -5163,7 +5216,7 @@ class RedBotCogLogscan(commands.Cog):
             mylogger.info(f"STANDARD: Starting menu.")
             menu_start_result = await menu.start(ctx)  # Start the menu for regular messages
 
-            _, tracked_url = await self.send_tracked_attachment_copy(
+            uploaded_tracked_filename, tracked_url = await self.send_tracked_attachment_copy(
                 ctx,
                 linked_message_author,
                 attachment,
@@ -5173,7 +5226,7 @@ class RedBotCogLogscan(commands.Cog):
             )
             self.add_attachment_links_to_scan_details_embed(
                 scan_details_embed,
-                tracked_filename,
+                uploaded_tracked_filename,
                 tracked_url,
             )
             await self.edit_menu_scan_details_embed(menu, menu_start_result, scan_details_embed)
