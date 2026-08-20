@@ -3293,8 +3293,25 @@ class RedBotCogLogscan(commands.Cog):
                 break
         return "\n".join(header_lines).rstrip()
 
+    def is_people_blank_log_line(self, line):
+        return not line.strip()
+
+    def is_people_divider_log_line(self, line):
+        stripped = line.strip()
+        if not stripped:
+            return False
+        compact = stripped.replace(" ", "")
+        if len(compact) < 8:
+            return False
+        return len(set(compact)) == 1
+
+    def is_people_section_break(self, line):
+        return self.is_people_blank_log_line(line) or self.is_people_divider_log_line(line)
+
     def normalize_people_log_line(self, line):
-        return str(line or "").strip().strip("|").strip().strip("= ").strip()
+        if not line:
+            return ""
+        return str(line).strip().strip("= ").strip()
 
     def find_people_log_section_bounds(self, cleaned_lines, index, max_span=300):
         strong_start_patterns = (
@@ -3312,30 +3329,125 @@ class RedBotCogLogscan(commands.Cog):
         min_index = max(0, index - max_span)
         for idx in range(index, min_index - 1, -1):
             normalized = self.normalize_people_log_line(cleaned_lines[idx])
-            if normalized and any(re.match(pattern, normalized) for pattern in strong_start_patterns):
+            if not normalized:
+                continue
+            if any(re.match(pattern, normalized) for pattern in strong_start_patterns):
                 start = idx
                 break
 
         if start is None:
             for idx in range(index, min_index - 1, -1):
                 normalized = self.normalize_people_log_line(cleaned_lines[idx])
-                if normalized and any(re.match(pattern, normalized) for pattern in weak_start_patterns):
+                if not normalized:
+                    continue
+                if any(re.match(pattern, normalized) for pattern in weak_start_patterns):
                     start = idx
                     break
+
+        if start is not None:
+            while start > 0 and self.is_people_divider_log_line(cleaned_lines[start - 1]):
+                start -= 1
 
         max_index = len(cleaned_lines) - 1
         max_end = min(max_index, index + max_span)
         for idx in range(index, max_end + 1):
             normalized = self.normalize_people_log_line(cleaned_lines[idx])
-            if normalized and any(re.match(pattern, normalized) for pattern in end_patterns):
+            if not normalized:
+                continue
+            if any(re.match(pattern, normalized) for pattern in end_patterns):
                 end = idx
                 break
 
-        if start is None:
-            start = max(0, index - 8)
-        if end is None:
-            end = min(max_index, index + 8)
+        if end is not None:
+            while end < max_index and self.is_people_divider_log_line(cleaned_lines[end + 1]):
+                end += 1
+
+        if start is None or end is None:
+            fallback_start = index
+            while fallback_start > 0 and (index - fallback_start) < max_span:
+                if self.is_people_section_break(cleaned_lines[fallback_start - 1]):
+                    if self.is_people_divider_log_line(cleaned_lines[fallback_start - 1]):
+                        fallback_start -= 1
+                    break
+                fallback_start -= 1
+
+            fallback_end = index
+            while fallback_end < max_index and (fallback_end - index) < max_span:
+                if self.is_people_section_break(cleaned_lines[fallback_end + 1]):
+                    if self.is_people_divider_log_line(cleaned_lines[fallback_end + 1]):
+                        fallback_end += 1
+                    break
+                fallback_end += 1
+
+            start = fallback_start if start is None else start
+            end = fallback_end if end is None else end
+
         return start, end
+
+    def extract_people_key_name_from_block(self, cleaned_lines, start, end):
+        key_name_patterns = (
+            r"^Validating\s+(.+?)\s+Attributes$",
+            r"^Running\s+(.+?)\s+Collection$",
+            r"^Finished\s+(.+?)\s+Collection$",
+            r"^(.+?)\s+Collection\s+in\s+.+$",
+        )
+        block = cleaned_lines[start:end + 1]
+        for idx, line in enumerate(block):
+            if "Validating Method: key_name" in line:
+                for offset in range(1, 6):
+                    if idx + offset >= len(block):
+                        break
+                    candidate = block[idx + offset].strip()
+                    if not candidate:
+                        continue
+                    if "Value:" in candidate:
+                        value = candidate.split("Value:", 1)[1].strip()
+                        if value:
+                            return value
+                break
+
+        for line in block:
+            normalized = self.normalize_people_log_line(line)
+            if not normalized:
+                continue
+            for pattern in key_name_patterns:
+                match = re.match(pattern, normalized)
+                if match:
+                    return match.group(1).strip()
+        return None
+
+    def extract_people_poster_candidate_names(self, lines, name_hint=None):
+        warning_regex = re.compile(
+            r"Collection Warning: No Poster Found at "
+            r"(https://raw\.githubusercontent\.com/"
+            r"(?:Kometa-Team/People-Images(?:-[^/]+)?|meisnate12/Plex-Meta-Manager-People(?:-[^/]+)?)"
+            r"/[^\s\]]+)",
+            re.IGNORECASE,
+        )
+        update_regex = re.compile(r"Metadata:\s+tmdb_person\s+updated\s+poster\s+to\s+\[URL\]\s+https?://\S+", re.IGNORECASE)
+        names = set()
+        for line in lines:
+            match = warning_regex.search(line)
+            if not match:
+                continue
+            url = match.group(1)
+            name = self.extract_filename_from_url(url)
+            key = self.normalize_people_poster_name(name).lower()
+            if key:
+                names.add(key)
+
+        if not name_hint:
+            return names
+
+        key = self.normalize_people_poster_name(name_hint).lower()
+        if not key:
+            return names
+
+        for line in lines:
+            if update_regex.search(line):
+                names.add(key)
+                break
+        return names
 
     def build_missing_people_fake_log(self, content, not_found_names, not_found_names_with_url):
         missing_names = set()
@@ -3348,63 +3460,48 @@ class RedBotCogLogscan(commands.Cog):
 
         raw_lines = str(content or "").splitlines()
         cleaned_lines = self.cleanup_content(content).splitlines()
-        warning_regex = re.compile(
-            r"Collection Warning: No Poster Found at "
-            r"(https://raw\.githubusercontent\.com/"
-            r"(?:Kometa-Team/People-Images(?:-[^/]+)?|meisnate12/Plex-Meta-Manager-People(?:-[^/]+)?)"
-            r"/[^\s\]]+)",
-            re.IGNORECASE,
-        )
-        update_regex = re.compile(r"tmdb_person updated poster to \[URL\]", re.IGNORECASE)
-        finished_regex = re.compile(r"^Finished\s+(.+?)\s+Collection$", re.IGNORECASE)
-
-        def nearby_finished_name(start_index, max_lookahead=12):
-            max_index = min(len(cleaned_lines) - 1, start_index + max_lookahead)
-            for line_index in range(start_index, max_index + 1):
-                normalized = self.normalize_people_log_line(cleaned_lines[line_index])
-                match = finished_regex.match(normalized)
-                if match:
-                    return self.normalize_people_poster_name(match.group(1)), line_index
-            return None, None
-
-        entries = []
+        warning_regex = re.compile(r"Collection Warning: No Poster Found at ", re.IGNORECASE)
+        update_regex = re.compile(r"Metadata:\s+tmdb_person\s+updated\s+poster\s+to\s+\[URL\]\s+https?://\S+", re.IGNORECASE)
+        blocks = []
+        seen_blocks = set()
         seen_names = set()
 
-        def add_entry(name, line):
-            key = str(name or "").lower()
-            entry = str(line or "").rstrip()
-            if key and entry and key not in seen_names:
-                entries.append(entry)
-                seen_names.add(key)
-
-        for idx, raw_line in enumerate(raw_lines):
-            cleaned_line = cleaned_lines[idx] if idx < len(cleaned_lines) else raw_line
-            warning_match = warning_regex.search(cleaned_line)
-            if warning_match:
-                name = self.normalize_people_poster_name(self.extract_filename_from_url(warning_match.group(1)))
-                if name.lower() in missing_names:
-                    add_entry(name, raw_line)
+        for idx, line in enumerate(raw_lines):
+            if not (warning_regex.search(line) or update_regex.search(line)):
                 continue
 
-            if update_regex.search(cleaned_line):
-                name, finished_idx = nearby_finished_name(idx)
-                if name and name.lower() in missing_names:
-                    image_url_match = re.search(r"\[URL\]\s+(https?://\S+)", cleaned_line, re.IGNORECASE)
-                    image_url = image_url_match.group(1).rstrip("|") if image_url_match else ""
-                    fake_line = f"{raw_line.rstrip().rstrip('|').rstrip()} | Missing People Poster: {name}"
-                    if image_url:
-                        fake_line += f" | Source Image: {image_url}"
-                    fake_line += " |"
-                    add_entry(name, fake_line)
+            if idx < len(cleaned_lines):
+                start, end = self.find_people_log_section_bounds(cleaned_lines, idx)
+            else:
+                start = max(0, idx - 2)
+                end = min(len(raw_lines) - 1, idx + 2)
 
-        if not entries:
+            block_lines = raw_lines[start:end + 1]
+            name_hint = None
+            if idx < len(cleaned_lines):
+                name_hint = self.extract_people_key_name_from_block(cleaned_lines, start, end)
+            names = self.extract_people_poster_candidate_names(block_lines, name_hint=name_hint)
+            matching_names = {name for name in names if name in missing_names}
+            if not matching_names:
+                continue
+            if matching_names.issubset(seen_names):
+                continue
+
+            block_text = "\n".join(block_lines)
+            if block_text in seen_blocks:
+                continue
+            seen_blocks.add(block_text)
+            blocks.append(block_text)
+            seen_names.update(matching_names)
+
+        if not blocks:
             return None
 
         header = self.extract_people_header_for_fake_log(content)
         output_parts = []
         if header:
             output_parts.append(header)
-        output_parts.extend(entries)
+        output_parts.extend(blocks)
         return "\n".join(output_parts).rstrip() + "\n"
     async def send_to_masters(self, ctx, target_masters_thread_id, sohjiro_id, msg_txt):
         target_channel = self.bot.get_channel(target_masters_thread_id)
