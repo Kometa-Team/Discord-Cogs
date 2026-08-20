@@ -3348,38 +3348,63 @@ class RedBotCogLogscan(commands.Cog):
 
         raw_lines = str(content or "").splitlines()
         cleaned_lines = self.cleanup_content(content).splitlines()
-        blocks = []
-        seen_blocks = set()
+        warning_regex = re.compile(
+            r"Collection Warning: No Poster Found at "
+            r"(https://raw\.githubusercontent\.com/"
+            r"(?:Kometa-Team/People-Images(?:-[^/]+)?|meisnate12/Plex-Meta-Manager-People(?:-[^/]+)?)"
+            r"/[^\s\]]+)",
+            re.IGNORECASE,
+        )
+        update_regex = re.compile(r"tmdb_person updated poster to \[URL\]", re.IGNORECASE)
+        finished_regex = re.compile(r"^Finished\s+(.+?)\s+Collection$", re.IGNORECASE)
 
-        for idx, cleaned_line in enumerate(cleaned_lines):
-            normalized_line = self.normalize_people_log_line(cleaned_line)
-            lowered_line = normalized_line.lower()
-            is_people_signal = (
-                "collection warning: no poster found" in lowered_line
-                or "tmdb_person updated poster to [url]" in lowered_line
-            )
-            mentions_missing_name = any(name in lowered_line for name in missing_names)
-            if not is_people_signal and not mentions_missing_name:
+        def nearby_finished_name(start_index, max_lookahead=12):
+            max_index = min(len(cleaned_lines) - 1, start_index + max_lookahead)
+            for line_index in range(start_index, max_index + 1):
+                normalized = self.normalize_people_log_line(cleaned_lines[line_index])
+                match = finished_regex.match(normalized)
+                if match:
+                    return self.normalize_people_poster_name(match.group(1)), line_index
+            return None, None
+
+        entries = []
+        seen_names = set()
+
+        def add_entry(name, line):
+            key = str(name or "").lower()
+            entry = str(line or "").rstrip()
+            if key and entry and key not in seen_names:
+                entries.append(entry)
+                seen_names.add(key)
+
+        for idx, raw_line in enumerate(raw_lines):
+            cleaned_line = cleaned_lines[idx] if idx < len(cleaned_lines) else raw_line
+            warning_match = warning_regex.search(cleaned_line)
+            if warning_match:
+                name = self.normalize_people_poster_name(self.extract_filename_from_url(warning_match.group(1)))
+                if name.lower() in missing_names:
+                    add_entry(name, raw_line)
                 continue
 
-            start, end = self.find_people_log_section_bounds(cleaned_lines, idx)
-            block_lines = raw_lines[start:end + 1]
-            block_text = "\n".join(block_lines).strip()
-            block_lower = block_text.lower()
-            if not any(name in block_lower for name in missing_names):
-                continue
-            if block_text and block_text not in seen_blocks:
-                blocks.append(block_text)
-                seen_blocks.add(block_text)
+            if update_regex.search(cleaned_line):
+                name, finished_idx = nearby_finished_name(idx)
+                if name and name.lower() in missing_names:
+                    image_url_match = re.search(r"\[URL\]\s+(https?://\S+)", cleaned_line, re.IGNORECASE)
+                    image_url = image_url_match.group(1).rstrip("|") if image_url_match else ""
+                    fake_line = f"{raw_line.rstrip().rstrip('|').rstrip()} | Missing People Poster: {name}"
+                    if image_url:
+                        fake_line += f" | Source Image: {image_url}"
+                    fake_line += " |"
+                    add_entry(name, fake_line)
 
-        if not blocks:
+        if not entries:
             return None
 
         header = self.extract_people_header_for_fake_log(content)
         output_parts = []
         if header:
             output_parts.append(header)
-        output_parts.extend(blocks)
+        output_parts.extend(entries)
         return "\n".join(output_parts).rstrip() + "\n"
     async def send_to_masters(self, ctx, target_masters_thread_id, sohjiro_id, msg_txt):
         target_channel = self.bot.get_channel(target_masters_thread_id)
