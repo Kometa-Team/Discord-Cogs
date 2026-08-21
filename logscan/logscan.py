@@ -4598,6 +4598,12 @@ class RedBotCogLogscan(commands.Cog):
         source_message=None,
     ):
         valid_logs, skipped_files = self.build_archive_log_candidates(extracted_files)
+        if not valid_logs:
+            mylogger.info(
+                f"No valid Kometa logs found in archive {archive_filename}; skipping user-facing progress message."
+            )
+            return
+
         status_message = await ctx.send(
             embed=self.build_archive_status_embed(
                 archive_filename,
@@ -4608,20 +4614,6 @@ class RedBotCogLogscan(commands.Cog):
                 skipped_files=skipped_files,
             )
         )
-
-        if not valid_logs:
-            await self.update_archive_status_message(
-                status_message,
-                self.build_archive_status_embed(
-                    archive_filename,
-                    len(extracted_files),
-                    len(valid_logs),
-                    len(skipped_files),
-                    status="No valid Kometa logs found in this archive.",
-                    skipped_files=skipped_files,
-                ),
-            )
-            return
 
         archive_prompt = SimpleNamespace(filename=f"{archive_filename} ({len(valid_logs)} log file(s))")
         decision, decision_user = await self.prompt_user_and_get_decision(ctx, archive_prompt)
@@ -4854,6 +4846,12 @@ class RedBotCogLogscan(commands.Cog):
             source_message,
         )
         batch_name = f"{getattr(source_message, 'id', 'unknown')} ({len(attachments)} attachment(s))"
+        if not valid_logs:
+            mylogger.info(
+                f"No valid Kometa logs found in attachment batch {batch_name}; skipping user-facing progress message."
+            )
+            return
+
         status_message = await ctx.send(
             embed=self.build_attachment_batch_status_embed(
                 batch_name,
@@ -4864,20 +4862,6 @@ class RedBotCogLogscan(commands.Cog):
                 skipped_files=skipped_files,
             )
         )
-
-        if not valid_logs:
-            await self.update_archive_status_message(
-                status_message,
-                self.build_attachment_batch_status_embed(
-                    batch_name,
-                    len(attachments),
-                    len(valid_logs),
-                    len(skipped_files),
-                    status="No valid Kometa logs found in these attachments.",
-                    skipped_files=skipped_files,
-                ),
-            )
-            return
 
         batch_prompt = SimpleNamespace(filename=f"{len(attachments)} attachment(s), {len(valid_logs)} log scan(s)")
         decision, decision_user = await self.prompt_user_and_get_decision(ctx, batch_prompt)
