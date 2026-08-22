@@ -115,7 +115,7 @@ _PMS_VULN_HIGH = (1, 42, 0, 99999)  # through 1.42.0.x
 
 
 def initialize_variables():
-    global script_name, script_env, target_thread_id, target_masters_thread_id, specific_user_id, sohjiro_id, support_role_id, ALLOWED_HELP, ALLOWED_TEST, ALLOWED_CHAT
+    global script_name, script_env, target_thread_id, target_masters_thread_id, specific_user_id, support_role_id, ALLOWED_HELP, ALLOWED_TEST, ALLOWED_CHAT
     script_name = os.path.basename(__file__)
     script_env = "prod" if script_name == "logscan.py" else "test"
     target_thread_id = (1193970055508148326 if script_env == "test" else 1110266071849652335)
@@ -124,7 +124,6 @@ def initialize_variables():
     ALLOWED_TEST = (1141467136158613544 if script_env == "test" else 1141467174570049696)
     ALLOWED_CHAT = (1138466667165405244 if script_env == "test" else 1100494390071410798)
     specific_user_id = (796565792492617728 if script_env == "test" else 796565792492617728)
-    sohjiro_id = (796565792492617728 if script_env == "test" else 206797306173849600)
     support_role_id = 55559384431853472440335555
 
 
@@ -3518,7 +3517,7 @@ class RedBotCogLogscan(commands.Cog):
             output_parts.append(header)
         output_parts.extend(blocks)
         return "\n".join(output_parts).rstrip() + "\n"
-    async def send_to_masters(self, ctx, target_masters_thread_id, sohjiro_id, msg_txt):
+    async def send_to_masters(self, ctx, target_masters_thread_id, msg_txt):
         target_channel = self.bot.get_channel(target_masters_thread_id)
         specific_user = ctx.author  # Use ctx.author as the specific user
         target_channel_ref = target_channel.mention if isinstance(target_channel, discord.abc.GuildChannel) else f"<#{target_masters_thread_id}>"
@@ -3530,10 +3529,8 @@ class RedBotCogLogscan(commands.Cog):
                 sender_mention = f"Sender: {ctx.author.mention}\nKometa-Masters, bot is notifying you.."
                 await target_channel.send(f"{sender_mention}\n\n")
 
-                user_mention = f"<@{sohjiro_id}>"
-
                 await target_channel.send(
-                    f"{user_mention} {msg_txt}<{ctx.author.name}>. Log file found here: {ctx.message.jump_url}")
+                    f"{msg_txt}<{ctx.author.name}>. Log file found here: {ctx.message.jump_url}")
                 return True
             except discord.Forbidden as e:
                 mylogger.warning(
@@ -5109,7 +5106,7 @@ class RedBotCogLogscan(commands.Cog):
             )
 
         if self.checkfiles_flg == 1:
-            await self.send_to_masters(ctx, target_masters_thread_id, sohjiro_id,
+            await self.send_to_masters(ctx, target_masters_thread_id,
                                        "**checkFiles=1** detected in a user uploaded log file by:")
 
         scan_summary_embed = self.create_scan_summary_embed(
