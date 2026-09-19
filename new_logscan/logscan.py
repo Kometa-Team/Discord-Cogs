@@ -24,6 +24,7 @@ class ScanPrompt(discord.ui.View):
         author_id: int,
         attachments: list[discord.Attachment],
         uploaded_by: str,
+        uploaded_by_id: int,
         source_url: str | None = None,
     ):
         super().__init__(timeout=120)
@@ -31,6 +32,7 @@ class ScanPrompt(discord.ui.View):
         self.author_id = author_id
         self.attachments = attachments
         self.uploaded_by = uploaded_by
+        self.uploaded_by_id = uploaded_by_id
         self.source_url = source_url
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -57,7 +59,7 @@ class ScanPrompt(discord.ui.View):
         batch_admin_url = None
         try:
             results, batch_result_url, batch_admin_url = await self.cog.scan_attachments(
-                self.attachments, self.source_url, self.uploaded_by, self.author_id
+                self.attachments, self.source_url, self.uploaded_by, self.uploaded_by_id
             )
         except (aiohttp.ClientError, ValueError) as exc:
             error = str(exc)
@@ -199,7 +201,7 @@ class LogScan(commands.Cog):
     ) -> None:
         await destination.send(
             f"Would you like me to scan {sum(self.valid_log_count(attachment) for attachment in attachments)} Kometa log(s) to identify issues and suggest improvements?",
-            view=ScanPrompt(self, author_id, attachments, uploaded_by, source_url),
+            view=ScanPrompt(self, author_id, attachments, uploaded_by, author_id, source_url),
         )
 
     @commands.Cog.listener()
@@ -226,7 +228,7 @@ class LogScan(commands.Cog):
             return
         await prompt_message.edit(
             content=f"Would you like me to scan {sum(self.valid_log_count(attachment) for attachment in usable_attachments)} Kometa log(s) to identify issues and suggest improvements?",
-            view=ScanPrompt(self, message.author.id, usable_attachments, message.author.name, message.jump_url),
+            view=ScanPrompt(self, message.author.id, usable_attachments, message.author.name, message.author.id, message.jump_url),
         )
 
     async def _resolve_message(self, ctx: commands.Context, reference: str) -> discord.Message | None:
@@ -269,7 +271,7 @@ class LogScan(commands.Cog):
             else:
                 await prompt_message.edit(content="That message doesn't have a usable Kometa log attachment.", view=None)
             return
-        await prompt_message.edit(content=f"Would you like me to scan {sum(self.valid_log_count(attachment) for attachment in usable_attachments)} Kometa log(s) to identify issues and suggest improvements?", view=ScanPrompt(self, ctx.author.id, usable_attachments, message.author.name, message.jump_url))
+        await prompt_message.edit(content=f"Would you like me to scan {sum(self.valid_log_count(attachment) for attachment in usable_attachments)} Kometa log(s) to identify issues and suggest improvements?", view=ScanPrompt(self, ctx.author.id, usable_attachments, message.author.name, message.author.id, message.jump_url))
 
     @commands.command(name="logscan")
     @commands.guild_only()
