@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import zipfile
 from urllib.parse import quote
@@ -9,8 +10,8 @@ import aiohttp
 import discord
 from redbot.core import Config, commands
 
-MAX_BYTES = 500 * 1024 * 1024
-MAX_BATCH_BYTES = 500 * 1024 * 1024
+MAX_BYTES = 1024 * 1024 * 1024
+MAX_BATCH_BYTES = 1024 * 1024 * 1024
 ALLOWED_SUFFIXES = (".log", ".txt", ".yml", ".yaml", ".zip", ".tar", ".tgz", ".gz") + tuple(f".{n}" for n in range(1, 10))
 DEFAULT_PRODUCTION_CHANNEL_IDS = (1539665929330499664,)
 MISSING_PEOPLE_CHANNEL_ID = 1539665929330499664
@@ -324,7 +325,7 @@ class LogScan(commands.Cog):
             raise ValueError("no attachments were provided")
         files = [(attachment.filename, await attachment.read(), attachment.content_type) for attachment in attachments]
         if any(len(content) > MAX_BYTES for _filename, content, _content_type in files):
-            raise ValueError("the attachment exceeds 500 MiB")
+            raise ValueError("the attachment exceeds 1 GiB")
         if sum(len(content) for _filename, content, _content_type in files) > MAX_BATCH_BYTES:
             raise ValueError("the files are too large after extraction. Please upload smaller batches of up to 500 MiB each.")
         if len(files) == 1:
@@ -351,7 +352,7 @@ class LogScan(commands.Cog):
         if not api_key:
             raise ValueError("the cog API key has not been configured")
         if len(content) > MAX_BYTES and not filename.lower().endswith(".zip"):
-            raise ValueError("the attachment exceeds 500 MiB")
+            raise ValueError("the attachment exceeds 1 GiB")
         form = aiohttp.FormData()
         form.add_field(
             "log",
@@ -369,9 +370,21 @@ class LogScan(commands.Cog):
         timeout = aiohttp.ClientTimeout(total=300)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(f"{base_url}/api/bot/scan", data=form, headers=headers) as response:
-                payload = await response.json(content_type=None)
+                response_text = await response.text()
+                try:
+                    payload = json.loads(response_text)
+                except (json.JSONDecodeError, TypeError):
+                    content_type = response.headers.get("Content-Type", "unknown content type").split(";", 1)[0]
+                    request_id = response.headers.get("CF-Ray") or response.headers.get("X-Request-ID")
+                    diagnostic = f"Logscan service returned HTTP {response.status} ({content_type}) instead of JSON"
+                    if request_id:
+                        diagnostic += f"; request ID `{request_id}`"
+                    diagnostic += ". Check the Logscan service logs for the matching request."
+                    raise ValueError(diagnostic) from None
+                if not isinstance(payload, dict):
+                    raise ValueError(f"Logscan service returned HTTP {response.status} with an unexpected JSON response")
                 if response.status != 200:
-                    raise ValueError(payload.get("error", f"server returned HTTP {response.status}"))
+                    raise ValueError(payload.get("error", f"Logscan service returned HTTP {response.status}"))
         results = []
         for scan in payload["scans"]:
             view_url = scan["result_url"]
