@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import re
 import zipfile
+import uuid
 from urllib.parse import quote
 
 import aiohttp
@@ -59,8 +61,30 @@ class ScanPrompt(discord.ui.View):
         batch_result_url = None
         batch_admin_url = None
         try:
+            async def update_progress(job):
+                phase = job.get("phase")
+                if phase == "queued":
+                    position = job.get("queue_position", 1)
+                    ahead = job.get("ahead_count", max(0, position - 1))
+                    ahead_text = "no scans ahead" if ahead == 0 else f"{ahead} ahead"
+                    message = f"Waiting for scanner - queue position {position} ({ahead_text})."
+                    button.label = f"Queued #{position}"
+                elif phase == "scanning":
+                    message = "Extracting and scanning the submitted log(s)..."
+                    button.label = "Scanning..."
+                elif phase == "saving":
+                    message = "Saving scan results..."
+                    button.label = "Saving..."
+                else:
+                    return
+                try:
+                    await interaction.edit_original_response(content=message, view=self)
+                except discord.HTTPException:
+                    pass
+
             results, batch_result_url, batch_admin_url = await self.cog.scan_attachments(
-                self.attachments, self.source_url, self.uploaded_by, self.uploaded_by_id
+                self.attachments, self.source_url, self.uploaded_by, self.uploaded_by_id,
+                progress=update_progress,
             )
         except (aiohttp.ClientError, ValueError) as exc:
             error = str(exc)
@@ -319,6 +343,7 @@ class LogScan(commands.Cog):
         source_url: str | None = None,
         uploaded_by: str | None = None,
         uploaded_by_id: int | None = None,
+        progress=None,
     ) -> tuple[list[tuple[str, str, str, int, list[dict]]], str | None, str | None]:
         """Scan attachments together so multi-log Discord uploads create one batch."""
         if not attachments:
@@ -336,7 +361,7 @@ class LogScan(commands.Cog):
                 for filename, content, _content_type in files:
                     bundle.writestr(filename, content)
             filename, content, content_type = "discord-log-batch.zip", archive.getvalue(), "application/zip"
-        return await self._submit_scan(filename, content, content_type, source_url, uploaded_by, uploaded_by_id)
+        return await self._submit_scan(filename, content, content_type, source_url, uploaded_by, uploaded_by_id, progress)
 
     async def _submit_scan(
         self,
@@ -346,6 +371,7 @@ class LogScan(commands.Cog):
         source_url: str | None = None,
         uploaded_by: str | None = None,
         uploaded_by_id: int | None = None,
+        progress=None,
     ) -> tuple[list[tuple[str, str, str, int, list[dict]]], str | None, str | None]:
         base_url = (await self.config.url()).rstrip("/")
         api_key = await self.config.api_key()
@@ -366,7 +392,8 @@ class LogScan(commands.Cog):
             form.add_field("uploaded_by", uploaded_by)
         if uploaded_by_id is not None:
             form.add_field("uploaded_by_id", str(uploaded_by_id))
-        headers = {"Authorization": f"Bearer {api_key}"}
+        job_id = uuid.uuid4().hex
+        headers = {"Authorization": f"Bearer {api_key}", "X-Scan-Job-ID": job_id}
         timeout = aiohttp.ClientTimeout(total=300)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(f"{base_url}/api/bot/scan", data=form, headers=headers) as response:
@@ -383,8 +410,29 @@ class LogScan(commands.Cog):
                     raise ValueError(diagnostic) from None
                 if not isinstance(payload, dict):
                     raise ValueError(f"Logscan service returned HTTP {response.status} with an unexpected JSON response")
-                if response.status != 200:
+                if response.status not in {200, 202}:
                     raise ValueError(payload.get("error", f"Logscan service returned HTTP {response.status}"))
+            if response.status == 202:
+                last_progress = None
+                while True:
+                    await asyncio.sleep(2)
+                    async with session.get(f"{base_url}/api/scan-jobs/{job_id}", headers=headers) as status_response:
+                        job = await status_response.json(content_type=None)
+                    if status_response.status != 200:
+                        raise ValueError(job.get("error", f"Unable to read scan status (HTTP {status_response.status})"))
+                    phase = job.get("phase")
+                    if phase == "failed":
+                        raise ValueError(job.get("error", "The scan could not be completed."))
+                    if phase == "complete":
+                        payload = job.get("result")
+                        if not isinstance(payload, dict):
+                            raise ValueError("The completed scan did not include a result payload")
+                        break
+                    progress_state = (phase, job.get("queue_position"), job.get("ahead_count"))
+                    if progress is not None and progress_state != last_progress:
+                        await progress(job)
+                        last_progress = progress_state
+
         results = []
         for scan in payload["scans"]:
             view_url = scan["result_url"]
