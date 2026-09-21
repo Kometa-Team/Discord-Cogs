@@ -198,14 +198,14 @@ class LogScan(commands.Cog):
     def log_attachments(message: discord.Message) -> list[discord.Attachment]:
         return [item for item in message.attachments if item.filename.lower().endswith(ALLOWED_SUFFIXES)]
 
-    async def usable_log_attachments(self, message: discord.Message) -> list[discord.Attachment] | None:
+    async def usable_log_attachments(self, message: discord.Message, progress=None) -> list[discord.Attachment] | None:
         """Return supported attachments accepted by LogScan's parser within the batch limit."""
         usable = []
         total_size = 0
         for attachment in self.log_attachments(message):
             if attachment.size > MAX_BYTES:
                 continue
-            validation = await self.validate_attachment(attachment)
+            validation = await self.validate_attachment(attachment, progress)
             if validation is None:
                 continue
             content_size, log_count = validation
@@ -241,7 +241,9 @@ class LogScan(commands.Cog):
             return
         prompt_message = await message.reply("⏳ *Checking for valid Kometa log files, please wait...*", mention_author=False)
         try:
-            usable_attachments = await self.usable_log_attachments(message)
+            usable_attachments = await self.usable_log_attachments(
+                message, lambda job: self.update_validation_progress(prompt_message, job)
+            )
         except ValueError as exc:
             await prompt_message.edit(content=str(exc), view=None)
             return
@@ -286,7 +288,9 @@ class LogScan(commands.Cog):
             return
         prompt_message = await ctx.send("⏳ *Scanning attachments for valid Kometa log files...*")
         try:
-            usable_attachments = await self.usable_log_attachments(message)
+            usable_attachments = await self.usable_log_attachments(
+                message, lambda job: self.update_validation_progress(prompt_message, job)
+            )
         except ValueError as exc:
             await prompt_message.edit(content=str(exc), view=None)
             return
@@ -309,8 +313,24 @@ class LogScan(commands.Cog):
         if message is not None:
             await self._offer_scan_for_message(ctx, message)
 
-    async def validate_attachment(self, attachment: discord.Attachment) -> tuple[int, int] | None:
-        """Ask the scanner to validate an attachment before offering a scan."""
+    async def update_validation_progress(self, prompt_message: discord.Message, job: dict) -> None:
+        phase = job.get("phase")
+        if phase == "queued":
+            position = job.get("queue_position", 1)
+            ahead = job.get("ahead_count", max(0, position - 1))
+            ahead_text = "no jobs ahead" if ahead == 0 else f"{ahead} ahead"
+            content = f"⏳ *Server busy - validation queue position {position} ({ahead_text}).*"
+        elif phase == "validating":
+            content = "⏳ *Validating attachment as a Kometa log...*"
+        else:
+            return
+        try:
+            await prompt_message.edit(content=content, view=None)
+        except discord.HTTPException:
+            pass
+
+    async def validate_attachment(self, attachment: discord.Attachment, progress=None) -> tuple[int, int] | None:
+        """Queue an attachment validation before offering a scan."""
         base_url = (await self.config.url()).rstrip("/")
         api_key = await self.config.api_key()
         if not api_key:
@@ -325,15 +345,34 @@ class LogScan(commands.Cog):
             filename=attachment.filename,
             content_type=attachment.content_type or "text/plain",
         )
-        headers = {"Authorization": f"Bearer {api_key}"}
+        job_id = uuid.uuid4().hex
+        headers = {"Authorization": f"Bearer {api_key}", "X-Scan-Job-ID": job_id}
         timeout = aiohttp.ClientTimeout(total=300)
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(f"{base_url}/api/bot/validate", data=form, headers=headers) as response:
-                    if response.status != 200:
+                    payload = await response.json(content_type=None)
+                    if response.status not in {200, 202}:
                         return None
-                    files = (await response.json(content_type=None))["files"]
-                    return sum(int(file["content_size"]) for file in files), len(files)
+                if response.status == 202:
+                    last_progress = None
+                    while True:
+                        await asyncio.sleep(2)
+                        async with session.get(f"{base_url}/api/scan-jobs/{job_id}", headers=headers) as status_response:
+                            job = await status_response.json(content_type=None)
+                        if status_response.status != 200 or job.get("phase") == "failed":
+                            return None
+                        if job.get("phase") == "complete":
+                            payload = job.get("result")
+                            break
+                        progress_state = (job.get("phase"), job.get("queue_position"), job.get("ahead_count"))
+                        if progress is not None and progress_state != last_progress:
+                            await progress(job)
+                            last_progress = progress_state
+                if not isinstance(payload, dict):
+                    return None
+                files = payload["files"]
+                return sum(int(file["content_size"]) for file in files), len(files)
         except (aiohttp.ClientError, KeyError, TypeError, ValueError):
             return None
 
