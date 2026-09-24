@@ -321,7 +321,7 @@ class LogScan(commands.Cog):
             ahead_text = "no jobs ahead" if ahead == 0 else f"{ahead} ahead"
             content = f"⏳ *Server busy - validation queue position {position} ({ahead_text}).*"
         elif phase == "validating":
-            content = "⏳ *Validating attachment as a Kometa log...*"
+            content = "⏳ *Validating attachment has a Kometa log...*"
         else:
             return
         try:
