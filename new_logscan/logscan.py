@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import aiohttp
 import discord
-from redbot.core import Config, commands
+from redbot.core import Config, app_commands, commands
 
 MAX_BYTES = 1024 * 1024 * 1024
 MAX_BATCH_BYTES = 1024 * 1024 * 1024
@@ -18,6 +18,9 @@ ALLOWED_SUFFIXES = (".log", ".txt", ".yml", ".yaml", ".zip", ".tar", ".tgz", ".g
 DEFAULT_PRODUCTION_CHANNEL_IDS = (1539665929330499664,)
 MISSING_PEOPLE_CHANNEL_ID = 1539665929330499664
 ENVIRONMENTS = ("production", "test")
+ORIGINAL_UPLOADER_FIELD = "original uploader"
+ORIGINAL_UPLOADER_MENTION_FIELD = "original uploader mention"
+TRACKED_FILENAME_PATTERN = re.compile(r"^.+_(?P<author>[^_]+)_[0-9a-f]{8}(?:_config)?(?:\.[^.]+)?$", re.IGNORECASE)
 
 
 class ScanPrompt(discord.ui.View):
@@ -198,6 +201,44 @@ class LogScan(commands.Cog):
     def log_attachments(message: discord.Message) -> list[discord.Attachment]:
         return [item for item in message.attachments if item.filename.lower().endswith(ALLOWED_SUFFIXES)]
 
+    @staticmethod
+    def resolve_uploader(message: discord.Message, attachments: list[discord.Attachment]) -> tuple[str, int]:
+        """Recover the original uploader when a bot reposted a tracked attachment."""
+        author = message.author
+        uploader_name = getattr(author, "display_name", None) or getattr(author, "name", None) or "Unknown"
+        uploader_id = int(getattr(author, "id", 0) or 0)
+        provenance_found = False
+
+        content_match = re.search(r"^Original uploader:\s*(.+)$", message.content or "", re.MULTILINE | re.IGNORECASE)
+        if content_match:
+            uploader_name = content_match.group(1).strip() or uploader_name
+            uploader_id = 0
+            provenance_found = True
+
+        for embed in message.embeds:
+            for field in embed.fields:
+                field_name = (field.name or "").strip().lower()
+                field_value = (field.value or "").strip().strip("`")
+                if field_name == ORIGINAL_UPLOADER_FIELD and field_value:
+                    uploader_name = field_value
+                    uploader_id = 0
+                    provenance_found = True
+                elif field_name == ORIGINAL_UPLOADER_MENTION_FIELD:
+                    mention = re.fullmatch(r"<@!?(\d+)>", field_value)
+                    if mention:
+                        uploader_id = int(mention.group(1))
+                        provenance_found = True
+
+        if getattr(author, "bot", False) and not provenance_found:
+            for attachment in attachments:
+                tracked = TRACKED_FILENAME_PATTERN.match(attachment.filename)
+                if tracked:
+                    uploader_name = tracked.group("author")
+                    uploader_id = 0
+                    break
+
+        return uploader_name, uploader_id
+
     async def usable_log_attachments(self, message: discord.Message, progress=None) -> list[discord.Attachment] | None:
         """Return supported attachments accepted by LogScan's parser within the batch limit."""
         usable = []
@@ -300,9 +341,14 @@ class LogScan(commands.Cog):
             else:
                 await prompt_message.edit(content="That message doesn't have a usable Kometa log attachment.", view=None)
             return
-        await prompt_message.edit(content=f"Would you like me to scan {sum(self.valid_log_count(attachment) for attachment in usable_attachments)} Kometa log(s) to identify issues and suggest improvements?", view=ScanPrompt(self, ctx.author.id, usable_attachments, message.author.name, message.author.id, message.jump_url))
+        uploader_name, uploader_id = self.resolve_uploader(message, usable_attachments)
+        await prompt_message.edit(
+            content=f"Would you like me to scan {sum(self.valid_log_count(attachment) for attachment in usable_attachments)} Kometa log(s) to identify issues and suggest improvements?",
+            view=ScanPrompt(self, ctx.author.id, usable_attachments, uploader_name, uploader_id, message.jump_url),
+        )
 
-    @commands.command(name="logscan")
+    @commands.hybrid_command(name="logscan")
+    @app_commands.describe(reference="Discord message link or message ID containing the log attachment")
     @commands.guild_only()
     async def scan_log_message(self, ctx: commands.Context, reference: str):
         """Offer to scan a supported attachment from a message in this channel."""
