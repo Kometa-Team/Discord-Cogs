@@ -89,9 +89,10 @@ scan manually:
 
 ```text
 [p]logscan <message-link-or-id>
+/logscan reference:<message-link-or-id>
 ```
 
-The command must be run in an allowed channel or thread. It can resolve a
+Both the prefix and slash commands must be run in an allowed channel or thread. They can resolve a
 Discord message link from another channel when the bot has access to that
 message.
 
