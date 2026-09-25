@@ -84,7 +84,7 @@ The second form clears the list. Roles never bypass the allowed-channel policy.
 ## Scanning a message
 
 When a supported attachment is posted in an allowed location, the cog validates
-it and presents **Scan log** and **No thanks** buttons. Users can also request a
+it and presents **Scan log** and **No thanks** buttons. If nobody chooses, the cog starts the scan automatically after 10 seconds and updates the prompt to show that decision. Users can also request a
 scan manually:
 
 ```text

@@ -21,6 +21,35 @@ ENVIRONMENTS = ("production", "test")
 ORIGINAL_UPLOADER_FIELD = "original uploader"
 ORIGINAL_UPLOADER_MENTION_FIELD = "original uploader mention"
 TRACKED_FILENAME_PATTERN = re.compile(r"^.+_(?P<author>[^_]+)_[0-9a-f]{8}(?:_config)?(?:\.[^.]+)?$", re.IGNORECASE)
+SCAN_PROMPT_TIMEOUT_SECONDS = 10
+
+
+class TimeoutResponse:
+    def __init__(self, view: "ScanPrompt"):
+        self.view = view
+
+    async def edit_message(self, *, content: str, view: discord.ui.View) -> None:
+        if self.view.message is not None:
+            await self.view.message.edit(content=content, view=view)
+
+
+class TimeoutFollowup:
+    def __init__(self, view: "ScanPrompt"):
+        self.view = view
+
+    async def send(self, content: str, *, ephemeral: bool = False, suppress_embeds: bool = False) -> None:
+        await self.view.send_timeout_message(content, private=ephemeral, suppress_embeds=suppress_embeds)
+
+
+class TimeoutInteraction:
+    def __init__(self, view: "ScanPrompt"):
+        self.view = view
+        self.response = TimeoutResponse(view)
+        self.followup = TimeoutFollowup(view)
+
+    async def edit_original_response(self, *, content: str, view: discord.ui.View) -> None:
+        if self.view.message is not None:
+            await self.view.message.edit(content=content, view=view)
 
 
 class ScanPrompt(discord.ui.View):
@@ -33,13 +62,62 @@ class ScanPrompt(discord.ui.View):
         uploaded_by_id: int,
         source_url: str | None = None,
     ):
-        super().__init__(timeout=120)
+        super().__init__(timeout=SCAN_PROMPT_TIMEOUT_SECONDS)
         self.cog = cog
         self.author_id = author_id
         self.attachments = attachments
         self.uploaded_by = uploaded_by
         self.uploaded_by_id = uploaded_by_id
         self.source_url = source_url
+        self.message: discord.Message | None = None
+        self._decision_lock = asyncio.Lock()
+        self._resolved = False
+
+    def bind_message(self, message: discord.Message) -> "ScanPrompt":
+        self.message = message
+        return self
+
+    async def claim_decision(self) -> bool:
+        async with self._decision_lock:
+            if self._resolved:
+                return False
+            self._resolved = True
+            self.stop()
+            return True
+
+    async def send_timeout_message(self, content: str, *, private: bool = False, suppress_embeds: bool = False) -> None:
+        if not private and self.message is not None:
+            await self.message.channel.send(content, suppress_embeds=suppress_embeds)
+            return
+        user = self.cog.bot.get_user(self.author_id)
+        if user is None:
+            try:
+                user = await self.cog.bot.fetch_user(self.author_id)
+            except discord.HTTPException:
+                user = None
+        if user is not None:
+            try:
+                await user.send(content, suppress_embeds=suppress_embeds)
+                return
+            except discord.HTTPException:
+                pass
+        if self.message is not None:
+            await self.message.channel.send(
+                f"<@{self.author_id}> I could not send your private scan details by DM. "
+                "Open your DMs and run the scan again to receive them."
+            )
+
+    async def on_timeout(self) -> None:
+        if self.message is None or not await self.claim_decision():
+            return
+        try:
+            await self.message.edit(
+                content=f"No response received after {SCAN_PROMPT_TIMEOUT_SECONDS} seconds. Starting the scan automatically...",
+                view=self,
+            )
+            await self.scan.callback(TimeoutInteraction(self))
+        except discord.HTTPException:
+            self.stop()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.author_id or await self.cog.user_has_privileged_role(interaction.user):
@@ -52,6 +130,8 @@ class ScanPrompt(discord.ui.View):
 
     @discord.ui.button(label="Scan log", style=discord.ButtonStyle.primary, emoji="🔎")
     async def scan(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction, TimeoutInteraction) and not await self.claim_decision():
+            return
         for item in self.children:
             item.disabled = True
         self.remove_item(self.cancel)
@@ -151,6 +231,8 @@ class ScanPrompt(discord.ui.View):
 
     @discord.ui.button(label="No thanks", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        if not await self.claim_decision():
+            return
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(content="Log scan skipped.", view=self)
@@ -197,6 +279,12 @@ class LogScan(commands.Cog):
     def valid_log_count(self, attachment: discord.Attachment) -> int:
         return self.validated_log_counts.get(attachment.id, 1)
 
+    def scan_prompt_content(self, attachments: list[discord.Attachment]) -> str:
+        total_logs = sum(self.valid_log_count(attachment) for attachment in attachments)
+        return (
+            f"Would you like me to scan {total_logs} Kometa log(s) to identify issues and suggest improvements? "
+            f"If you do not choose, I will scan automatically in {SCAN_PROMPT_TIMEOUT_SECONDS} seconds."
+        )
     @staticmethod
     def log_attachments(message: discord.Message) -> list[discord.Attachment]:
         return [item for item in message.attachments if item.filename.lower().endswith(ALLOWED_SUFFIXES)]
@@ -265,10 +353,9 @@ class LogScan(commands.Cog):
         uploaded_by: str,
         source_url: str | None = None,
     ) -> None:
-        await destination.send(
-            f"Would you like me to scan {sum(self.valid_log_count(attachment) for attachment in attachments)} Kometa log(s) to identify issues and suggest improvements?",
-            view=ScanPrompt(self, author_id, attachments, uploaded_by, author_id, source_url),
-        )
+        view = ScanPrompt(self, author_id, attachments, uploaded_by, author_id, source_url)
+        prompt_message = await destination.send(self.scan_prompt_content(attachments), view=view)
+        view.bind_message(prompt_message)
 
     @commands.Cog.listener()
     async def on_message_without_command(self, message: discord.Message):
@@ -294,10 +381,8 @@ class LogScan(commands.Cog):
             else:
                 await prompt_message.delete()
             return
-        await prompt_message.edit(
-            content=f"Would you like me to scan {sum(self.valid_log_count(attachment) for attachment in usable_attachments)} Kometa log(s) to identify issues and suggest improvements?",
-            view=ScanPrompt(self, message.author.id, usable_attachments, message.author.name, message.author.id, message.jump_url),
-        )
+        view = ScanPrompt(self, message.author.id, usable_attachments, message.author.name, message.author.id, message.jump_url).bind_message(prompt_message)
+        await prompt_message.edit(content=self.scan_prompt_content(usable_attachments), view=view)
 
     async def _resolve_message(self, ctx: commands.Context, reference: str) -> discord.Message | None:
         match = re.fullmatch(r"https?://(?:canary\.|ptb\.)?discord\.com/channels/\d+/(\d+)/(\d+)", reference)
@@ -342,10 +427,8 @@ class LogScan(commands.Cog):
                 await prompt_message.edit(content="That message doesn't have a usable Kometa log attachment.", view=None)
             return
         uploader_name, uploader_id = self.resolve_uploader(message, usable_attachments)
-        await prompt_message.edit(
-            content=f"Would you like me to scan {sum(self.valid_log_count(attachment) for attachment in usable_attachments)} Kometa log(s) to identify issues and suggest improvements?",
-            view=ScanPrompt(self, ctx.author.id, usable_attachments, uploader_name, uploader_id, message.jump_url),
-        )
+        view = ScanPrompt(self, ctx.author.id, usable_attachments, uploader_name, uploader_id, message.jump_url).bind_message(prompt_message)
+        await prompt_message.edit(content=self.scan_prompt_content(usable_attachments), view=view)
 
     @commands.hybrid_command(name="logscan")
     @app_commands.describe(reference="Discord message link or message ID containing the log attachment")
