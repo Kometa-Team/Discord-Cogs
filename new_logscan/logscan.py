@@ -435,6 +435,8 @@ class LogScan(commands.Cog):
     @commands.guild_only()
     async def scan_log_message(self, ctx: commands.Context, reference: str):
         """Offer to scan a supported attachment from a message in this channel."""
+        if ctx.interaction and not ctx.interaction.response.is_done():
+            await ctx.interaction.response.defer(thinking=True)
         if not await self.is_allowed_scan_location(ctx.channel):
             await ctx.send(await self.disallowed_channel_message(), delete_after=20)
             return
