@@ -89,7 +89,7 @@ scan manually:
 
 ```text
 [p]logscan <message-link-or-id>
-/logscan reference:<message-link-or-id>
+/logscan message_link:<message-link-or-id>
 ```
 
 Both the prefix and slash commands must be run in an allowed channel or thread. They can resolve a

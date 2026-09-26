@@ -431,16 +431,16 @@ class LogScan(commands.Cog):
         await prompt_message.edit(content=self.scan_prompt_content(usable_attachments), view=view)
 
     @commands.hybrid_command(name="logscan")
-    @app_commands.describe(reference="Discord message link or message ID containing the log attachment")
+    @app_commands.describe(message_link="Discord message link or message ID containing the log attachment")
     @commands.guild_only()
-    async def scan_log_message(self, ctx: commands.Context, reference: str):
+    async def scan_log_message(self, ctx: commands.Context, message_link: str):
         """Offer to scan a supported attachment from a message in this channel."""
         if ctx.interaction and not ctx.interaction.response.is_done():
             await ctx.interaction.response.defer(thinking=True)
         if not await self.is_allowed_scan_location(ctx.channel):
             await ctx.send(await self.disallowed_channel_message(), delete_after=20)
             return
-        message = await self._resolve_message(ctx, reference)
+        message = await self._resolve_message(ctx, message_link)
         if message is not None:
             await self._offer_scan_for_message(ctx, message)
 
