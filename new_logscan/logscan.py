@@ -146,7 +146,15 @@ class ScanPrompt(discord.ui.View):
         try:
             async def update_progress(job):
                 phase = job.get("phase")
-                if phase == "queued":
+                if phase == "downloading":
+                    current = job.get("current", 1)
+                    total = job.get("total", 1)
+                    message = f"Downloading attachment {current} of {total} from Discord..."
+                    button.label = "Downloading..."
+                elif phase == "uploading":
+                    message = "Uploading the submitted log(s) to Logscan..."
+                    button.label = "Uploading..."
+                elif phase == "queued":
                     position = job.get("queue_position", 1)
                     ahead = job.get("ahead_count", max(0, position - 1))
                     ahead_text = "no scans ahead" if ahead == 0 else f"{ahead} ahead"
@@ -446,7 +454,13 @@ class LogScan(commands.Cog):
 
     async def update_validation_progress(self, prompt_message: discord.Message, job: dict) -> None:
         phase = job.get("phase")
-        if phase == "queued":
+        if phase == "downloading":
+            current = job.get("current", 1)
+            total = job.get("total", 1)
+            content = f"⏳ *Downloading attachment {current} of {total} from Discord...*"
+        elif phase == "uploading":
+            content = "⏳ *Uploading attachment to Logscan...*"
+        elif phase == "queued":
             position = job.get("queue_position", 1)
             ahead = job.get("ahead_count", max(0, position - 1))
             ahead_text = "no jobs ahead" if ahead == 0 else f"{ahead} ahead"
@@ -466,6 +480,8 @@ class LogScan(commands.Cog):
         api_key = await self.config.api_key()
         if not api_key:
             return None
+        if progress is not None:
+            await progress({"phase": "downloading", "current": 1, "total": 1})
         content = await attachment.read()
         if len(content) > MAX_BYTES:
             return None
@@ -480,6 +496,8 @@ class LogScan(commands.Cog):
         headers = {"Authorization": f"Bearer {api_key}", "X-Scan-Job-ID": job_id}
         timeout = aiohttp.ClientTimeout(total=300)
         try:
+            if progress is not None:
+                await progress({"phase": "uploading"})
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(f"{base_url}/api/bot/validate", data=form, headers=headers) as response:
                     payload = await response.json(content_type=None)
@@ -518,7 +536,11 @@ class LogScan(commands.Cog):
         """Scan attachments together so multi-log Discord uploads create one batch."""
         if not attachments:
             raise ValueError("no attachments were provided")
-        files = [(attachment.filename, await attachment.read(), attachment.content_type) for attachment in attachments]
+        files = []
+        for index, attachment in enumerate(attachments, start=1):
+            if progress is not None:
+                await progress({"phase": "downloading", "current": index, "total": len(attachments)})
+            files.append((attachment.filename, await attachment.read(), attachment.content_type))
         if any(len(content) > MAX_BYTES for _filename, content, _content_type in files):
             raise ValueError("the attachment exceeds 1 GiB")
         if sum(len(content) for _filename, content, _content_type in files) > MAX_BATCH_BYTES:
@@ -565,6 +587,8 @@ class LogScan(commands.Cog):
         job_id = uuid.uuid4().hex
         headers = {"Authorization": f"Bearer {api_key}", "X-Scan-Job-ID": job_id}
         timeout = aiohttp.ClientTimeout(total=300)
+        if progress is not None:
+            await progress({"phase": "uploading"})
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(f"{base_url}/api/bot/scan", data=form, headers=headers) as response:
                 response_text = await response.text()
