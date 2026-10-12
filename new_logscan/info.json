@@ -1,9 +1,9 @@
 {
   "author": ["Kometa Team"],
-  "description": "Offers to scan Kometa log attachments and returns private result/deletion URLs.",
+  "description": "Offers to scan Kometa and ImageMaid log attachments using backend content detection and returns result URLs with private management links.",
   "install_msg": "Configure with `[p]logscanset url https://logscan.kometa.team`, `[p]logscanset apikey <key>`, and `[p]logscanset channels production <channel-id>`. Optional test channels use `[p]logscanset channels test <channel-id>` plus `[p]logscanset environment test`; support roles can use `[p]logscanset roles <role-id>`.",
-  "short": "Scan attached Kometa logs.",
+  "short": "Scan attached Kometa and ImageMaid logs.",
   "requirements": ["aiohttp>=3.9"],
-  "tags": ["kometa", "logs", "diagnostics"],
+  "tags": ["kometa", "imagemaid", "logs", "diagnostics"],
   "type": "COG"
 }

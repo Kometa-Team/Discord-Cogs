@@ -1,11 +1,23 @@
 # LogScan Red cog
 
-`logscan` detects supported Kometa log attachments, asks before submitting
+`logscan` detects supported Kometa and ImageMaid log attachments, asks before submitting
 them to a LogScan service, and posts a result link. The uploader receives the
 deletion link privately; anyone with that link can permanently delete the
-associated scan.
+associated upload. Shared scans remain available to their other uploaders.
+
+Detection is delegated to the web service's `/api/bot/validate` endpoint, which
+identifies the tool by log content rather than its filename. Mixed archives are
+supported. Update the Logscan web service before reloading this cog. The server
+reuses identical retained logs across Discord and web uploads and provides a
+new private management token to each uploader.
 
 ## Install
+
+Run the isolated backend-detection regression checks without loading Red:
+
+```powershell
+py -3.13 new_logscan/test_backend_detection.py
+```
 
 Add this repository to Red's Downloader, then install and load the cog:
 

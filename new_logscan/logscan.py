@@ -102,10 +102,7 @@ class ScanPrompt(discord.ui.View):
             except discord.HTTPException:
                 pass
         if self.message is not None:
-            await self.message.channel.send(
-                f"<@{self.author_id}> I could not send your private scan details by DM. "
-                "Open your DMs and run the scan again to receive them."
-            )
+            await self.message.channel.send(f"<@{self.author_id}> I could not send your private scan details by DM. " "Open your DMs and run the scan again to receive them.")
 
     async def on_timeout(self) -> None:
         if self.message is None or not await self.claim_decision():
@@ -144,6 +141,7 @@ class ScanPrompt(discord.ui.View):
         batch_result_url = None
         batch_admin_url = None
         try:
+
             async def update_progress(job):
                 phase = job.get("phase")
                 if phase == "downloading":
@@ -174,7 +172,10 @@ class ScanPrompt(discord.ui.View):
                     pass
 
             results, batch_result_url, batch_admin_url = await self.cog.scan_attachments(
-                self.attachments, self.source_url, self.uploaded_by, self.uploaded_by_id,
+                self.attachments,
+                self.source_url,
+                self.uploaded_by,
+                self.uploaded_by_id,
                 progress=update_progress,
             )
         except (aiohttp.ClientError, ValueError) as exc:
@@ -196,41 +197,31 @@ class ScanPrompt(discord.ui.View):
         is_single_scan = len(results) == 1 and not batch_result_url
         public_results = (
             f"**Batch Results:** [Click Here]({batch_result_url})"
-            if batch_result_url else (
-                f"**Results:** [Click Here]({results[0][1]})" if is_single_scan
-                else "\n".join(f"- `{filename}`: [Click Here]({view_url})" for filename, view_url, *_ in results)
-            )
+            if batch_result_url
+            else (f"**Results:** [Click Here]({results[0][1]})" if is_single_scan else "\n".join(f"- `{filename}`: [Click Here]({view_url})" for filename, view_url, *_ in results))
         )
-        private_results = (
-            f"**Private batch link:** [Click Here]({batch_admin_url})\n\n"
-            if batch_admin_url else ""
-        )
+        private_results = f"**Private batch link:** [Click Here]({batch_admin_url})\n\n" if batch_admin_url else ""
         if is_single_scan:
             filename, view_url, delete_url, expires_at, missing_people = results[0]
             await interaction.followup.send(
-                f"**Scanned File:** `{filename}`\n**Uploaded By:** `{self.uploaded_by}`\n"
-                f"**Results:** [Click Here]({view_url})\n**Auto-Delete:** <t:{expires_at}:R>",
+                f"**Scanned File:** `{filename}`\n**Uploaded By:** `{self.uploaded_by}`\n" f"**Results:** [Click Here]({view_url})\n**Auto-Delete:** <t:{expires_at}:R>",
                 suppress_embeds=True,
             )
             await interaction.followup.send(
-                f"Your deletion link: [Click Here]({delete_url})\n"
-                "**Keep this link private. Anyone with it can permanently delete the log.**",
+                f"Your deletion link: [Click Here]({delete_url})\n" "**Keep this link private. It removes your upload; shared scans remain available to other uploaders.**",
                 ephemeral=True,
                 suppress_embeds=True,
             )
             return
         await interaction.followup.send(
-            "**Scanned Files**\n"
-            f"**Uploaded By:** `{self.uploaded_by}`\n"
-            f"**Auto-Delete:** <t:{results[0][3]}:R>\n\n"
-            + public_results,
+            "**Scanned Files**\n" f"**Uploaded By:** `{self.uploaded_by}`\n" f"**Auto-Delete:** <t:{results[0][3]}:R>\n\n" + public_results,
             suppress_embeds=True,
         )
         await interaction.followup.send(
             "**Private deletion links — keep these secret**\n\n"
             + private_results
             + ("" if batch_admin_url else "\n".join(f"- `{filename}`: [Click Here]({delete_url})" for filename, _view_url, delete_url, *_ in results))
-            + "\nAnyone with one of these links can permanently delete its corresponding scan.",
+            + "\nKeep these links private. They remove your uploads; shared scans remain available to other uploaders.",
             ephemeral=True,
             suppress_embeds=True,
         )
@@ -247,7 +238,7 @@ class ScanPrompt(discord.ui.View):
 
 
 class LogScan(commands.Cog):
-    """Detect and submit Kometa log attachments."""
+    """Detect and submit Kometa or ImageMaid log attachments using the backend parser."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -290,9 +281,10 @@ class LogScan(commands.Cog):
     def scan_prompt_content(self, attachments: list[discord.Attachment]) -> str:
         total_logs = sum(self.valid_log_count(attachment) for attachment in attachments)
         return (
-            f"Would you like me to scan {total_logs} Kometa log(s) to identify issues and suggest improvements? "
+            f"Would you like me to scan {total_logs} Kometa or ImageMaid log(s) to identify issues and suggest improvements? "
             f"If you do not choose, I will scan automatically in {SCAN_PROMPT_TIMEOUT_SECONDS} seconds."
         )
+
     @staticmethod
     def log_attachments(message: discord.Message) -> list[discord.Attachment]:
         return [item for item in message.attachments if item.filename.lower().endswith(ALLOWED_SUFFIXES)]
@@ -375,11 +367,9 @@ class LogScan(commands.Cog):
         if not await self.is_allowed_scan_location(message.channel):
             await message.reply(await self.disallowed_channel_message(), mention_author=False, delete_after=20)
             return
-        prompt_message = await message.reply("⏳ *Checking for valid Kometa log files, please wait...*", mention_author=False)
+        prompt_message = await message.reply("⏳ *Checking for valid Kometa or ImageMaid log files, please wait...*", mention_author=False)
         try:
-            usable_attachments = await self.usable_log_attachments(
-                message, lambda job: self.update_validation_progress(prompt_message, job)
-            )
+            usable_attachments = await self.usable_log_attachments(message, lambda job: self.update_validation_progress(prompt_message, job))
         except ValueError as exc:
             await prompt_message.edit(content=str(exc), view=None)
             return
@@ -420,11 +410,9 @@ class LogScan(commands.Cog):
         if not attachments:
             await ctx.send("That message doesn't have a supported log attachment.")
             return
-        prompt_message = await ctx.send("⏳ *Scanning attachments for valid Kometa log files...*")
+        prompt_message = await ctx.send("⏳ *Scanning attachments for valid Kometa or ImageMaid log files...*")
         try:
-            usable_attachments = await self.usable_log_attachments(
-                message, lambda job: self.update_validation_progress(prompt_message, job)
-            )
+            usable_attachments = await self.usable_log_attachments(message, lambda job: self.update_validation_progress(prompt_message, job))
         except ValueError as exc:
             await prompt_message.edit(content=str(exc), view=None)
             return
@@ -432,7 +420,7 @@ class LogScan(commands.Cog):
             if any(item.size > MAX_BYTES for item in attachments):
                 await prompt_message.edit(content="That log is larger than the 500 MiB scanner limit.", view=None)
             else:
-                await prompt_message.edit(content="That message doesn't have a usable Kometa log attachment.", view=None)
+                await prompt_message.edit(content="That message doesn't have a usable Kometa or ImageMaid log attachment.", view=None)
             return
         uploader_name, uploader_id = self.resolve_uploader(message, usable_attachments)
         view = ScanPrompt(self, ctx.author.id, usable_attachments, uploader_name, uploader_id, message.jump_url).bind_message(prompt_message)
@@ -466,7 +454,7 @@ class LogScan(commands.Cog):
             ahead_text = "no jobs ahead" if ahead == 0 else f"{ahead} ahead"
             content = f"⏳ *Server busy - validation queue position {position} ({ahead_text}).*"
         elif phase == "validating":
-            content = "⏳ *Validating attachment has a Kometa log...*"
+            content = "⏳ *Detecting Kometa or ImageMaid logs in the attachment...*"
         else:
             return
         try:
