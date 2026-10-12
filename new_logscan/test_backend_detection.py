@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import ast
 import io
+import unittest
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
-import unittest
 from unittest.mock import AsyncMock
-import uuid
 
 
 class Response:
@@ -74,7 +74,7 @@ class BackendDetectionTests(unittest.IsolatedAsyncioTestCase):
             "SCAN_PROMPT_TIMEOUT_SECONDS": 10,
             "aiohttp": SimpleNamespace(FormData=Form, ClientSession=Session, ClientTimeout=lambda **_: None, ClientError=ConnectionError),
         }
-        exec(compile(module, str(source), "exec"), self.namespace)
+        exec(compile(module, str(source), "exec"), self.namespace)  # noqa: S102 - Only trusted local production methods are compiled.
         self.cog = self.namespace["Detection"]()
         self.cog.config = SimpleNamespace(url=AsyncMock(return_value="https://example.test/"), api_key=AsyncMock(return_value="test-key"))
         self.cog.validated_log_counts = {}
